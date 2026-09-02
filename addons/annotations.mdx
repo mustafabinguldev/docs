@@ -1,0 +1,80 @@
+---
+title: "Annotation Reference: @DbDataModels"
+sidebarTitle: "Annotations"
+description: "The @DbDataModels annotation declares which Java fields Nexus Core persists in MongoDB and which field is the primary key used for cache lookups."
+---
+
+The `@DbDataModels` annotation is how you define your document schema inside a DataAddon. Nexus Core scans all declared fields at runtime using reflection, so every field that should be persisted in MongoDB or included in cache operations must carry this annotation. The scan result is cached after the first call, so reflection overhead is a one-time cost.
+
+## Syntax
+
+```java
+@DbDataModels(isId = true)
+private String uuid;
+
+@DbDataModels(defaultValue = "0", isId = false)
+private int kills;
+```
+
+## Parameters
+
+<ParamField path="isId" type="boolean" required>
+  Marks this field as the primary key. Nexus Core uses the value of the `isId` field both as the MongoDB query key and as the suffix in the Redis cache key. Every addon must have **exactly one** field with `isId = true`.
+</ParamField>
+
+<ParamField path="defaultValue" type="String" required>
+  The value written to MongoDB when the field is absent from the incoming packet payload. Required on all fields where `isId = false`. Provide the value as a string regardless of the field's Java type — Nexus Core converts it at runtime.
+</ParamField>
+
+## Supported Field Types
+
+| Java Type | Example `defaultValue` |
+| --- | --- |
+| `String` | `"unknown"` |
+| `int` / `Integer` | `"0"` |
+| `long` / `Long` | `"0"` |
+| `double` / `Double` | `"0.0"` |
+| `boolean` / `Boolean` | `"false"` |
+
+<Warning>
+  Every addon must have exactly one field annotated with `isId = true`. Nexus Core throws a configuration error at startup if this constraint is violated.
+</Warning>
+
+## Complete Model Example
+
+The following example shows all five supported types in a single addon:
+
+```java
+public class PlayerStatsAddon extends DataAddon {
+
+    @DbDataModels(isId = true)
+    private String uuid;               // Primary key — must be unique
+
+    @DbDataModels(defaultValue = "0", isId = false)
+    private int kills;
+
+    @DbDataModels(defaultValue = "0", isId = false)
+    private long playtimeSeconds;
+
+    @DbDataModels(defaultValue = "0.0", isId = false)
+    private double balance;
+
+    @DbDataModels(defaultValue = "false", isId = false)
+    private boolean isPremium;
+
+    // ... abstract method implementations
+}
+```
+
+## How Nexus Core Uses the Annotations
+
+1. **Schema discovery** — on first use, Nexus Core calls `getDeclaredFields()` and filters for fields annotated with `@DbDataModels`. The result is cached.
+2. **Serialization** — when writing to MongoDB, unannotated fields are ignored. Annotated fields are serialized to their target types.
+3. **Default injection** — if an incoming packet's `data` object omits a non-ID field, Nexus Core writes the `defaultValue` instead of leaving the field absent or null.
+4. **Cache key construction** — the value of the `isId` field at runtime becomes the suffix of the Redis key (`{cacheKeyHeaderTag}_{idFieldValue}`).
+
+## Related Topics
+
+- [DataAddon API](/addons/data-addon-api) — the full abstract class reference
+- [Redis Key Strategy](/reference/redis-key-strategy) — how the `isId` value becomes a Redis key suffix
+- [Best Practices](/addons/best-practices) — why UUIDs are preferred as `isId` fields

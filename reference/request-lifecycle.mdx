@@ -1,0 +1,111 @@
+---
+title: "Request Lifecycle in Nexus Core"
+sidebarTitle: "Request Lifecycle"
+description: "Step-by-step walkthrough of how Nexus Core processes an incoming Redis packet from security validation through cache lookup to response publication."
+---
+
+Every packet that enters Nexus Core travels through a deterministic sequence of steps before a response is sent. Understanding this lifecycle helps you reason about where failures occur, how caching decisions are made, and where your `handleRequest()` code fits in the flow.
+
+## Lifecycle Steps
+
+<Steps>
+  <Step title="Incoming Redis packet received">
+    Nexus Core's subscription listener receives the JSON packet from the Redis pub/sub channel.
+  </Step>
+  <Step title="Security chain validation">
+    The packet passes through the three-stage security chain:
+
+    1. HMAC-SHA256 signature verification
+    2. Timestamp window check (5-minute tolerance)
+    3. Nonce replay detection
+
+    If any stage fails, the packet is logged and dropped silently. No response is sent.
+  </Step>
+  <Step title="JSON parsed and protocol extracted">
+    The raw JSON string is deserialized and the `protocol` field is extracted to identify the target DataAddon.
+  </Step>
+  <Step title="AddonRegistry lookup">
+    Nexus Core queries the AddonRegistry for an addon registered under the given protocol ID. If no match is found, a WARN is logged and the packet is dropped.
+  </Step>
+  <Step title="handleRequest() called">
+    The matching addon's `handleRequest()` method is called synchronously with the source server ID, request type, and payload. If it returns `false`, an empty response is published to the source and processing stops.
+  </Step>
+  <Step title="Route by RequestType">
+    The request type determines the subsequent path through the cache and persistence layers.
+  </Step>
+  <Step title="Cache and persistence operations">
+    Depending on the request type:
+
+    - **GET_DATA**: Check Redis L2 cache. On a hit, return the cached document. On a miss, query MongoDB, write the result to both cache layers, then return it.
+    - **SET_DATA / UPDATE_DATA / INCREMENT_DATA**: Write to MongoDB, then update Redis L2 and L1 caches.
+    - **REMOVE_DATA**: Delete from MongoDB, then invalidate both cache layers.
+    - **LOAD_CACHE**: Fetch from MongoDB and warm both cache layers. No response payload.
+    - **RANKING / RANK_FINDER**: Execute a sorted MongoDB query directly. Cache is bypassed.
+    - **BROADCAST**: Publish the payload to the target server's Redis channel. No MongoDB operation.
+  </Step>
+  <Step title="Serialize and publish response">
+    The result is serialized to JSON and published to the originating server's Redis channel. The response includes the protocol ID, the `"nexus"` source, and the response data.
+  </Step>
+</Steps>
+
+## Full Flow Diagram
+
+```text
+Incoming Redis Packet
+        │
+        ▼
+┌─────────────────────┐
+│  Security Chain      │      ┌──────────────┐
+│  sig → timestamp →  │─────►│  Failed?     │──► Log and drop
+│  nonce              │      └──────────────┘
+└────────┬────────────┘
+         │ valid
+         ▼
+┌───────────────────┐
+│  Parse JSON       │
+│  Extract protocol │
+└────────┬──────────┘
+         │
+         ▼
+┌───────────────────┐
+│  AddonRegistry    │      ┌─────────────┐
+│  lookup(protocol) │─────►│ Not found?  │──► Log WARN and drop
+└────────┬──────────┘      └─────────────┘
+         │
+         ▼
+┌───────────────────┐
+│  handleRequest()  │      ┌─────────────┐
+│  (your code)      │─────►│  false?     │──► Send empty response
+└────────┬──────────┘      └─────────────┘
+         │ true
+         ▼
+┌───────────────────┐
+│  Route by         │
+│  RequestType      │
+└────────┬──────────┘
+         │
+    ┌────┴───────────────────┐
+    ▼                        ▼
+ GET_DATA              SET_DATA / UPDATE /
+    │                  INCREMENT / REMOVE
+    ▼                        │
+ Check Redis                 ▼
+ cache                Write MongoDB +
+    │                  update/invalidate
+    ├── HIT ──► return       │
+    │   cache                ▼
+    └── MISS ──► Query   Serialize
+        MongoDB + fill   response
+        cache            │
+           │             │
+           └──────┬──────┘
+                  ▼
+         Publish to source
+         Redis channel
+```
+
+## Related Topics
+
+- [Security](/concepts/security) — the three-stage validation chain in detail
+- [Request Types](/concepts/request-types) — all nine request types and their cache behaviors
+- [DataAddon API](/addons/data-addon-api) — where `handleRequest()` fits

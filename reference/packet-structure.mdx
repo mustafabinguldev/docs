@@ -1,0 +1,99 @@
+---
+title: "Protocol and Packet Structure Reference"
+sidebarTitle: "Packet Structure"
+description: "Reference for the JSON packet format exchanged between Spigot servers and Nexus Core over Redis pub/sub, including all security fields."
+---
+
+All communication between Spigot servers and Nexus Core uses JSON packets published over Redis pub/sub channels. When the security layer is active, every inbound packet must include the `sig`, `timestamp`, and `nonce` fields. The response packet is published to the originating server's dedicated Redis channel.
+
+## Incoming Packet (Spigot to Nexus Core)
+
+```json
+{
+  "protocol": 100,
+  "source": "pvp-1",
+  "type": "GET_DATA",
+  "data": {
+    "uuid": "550e8400-e29b-41d4-a716-446655440000"
+  },
+  "timestamp": 1719900000000,
+  "nonce": "b7f2b1b0-4b3b-4e29-9e2b-6b8f2b1b0b7f",
+  "sig": "base64-hmac-sha256-signature"
+}
+```
+
+### Fields
+
+<ParamField path="protocol" type="number" required>
+  The numeric addon ID registered with Nexus Core. Corresponds to the value returned by `addonId()` on the target DataAddon.
+</ParamField>
+
+<ParamField path="source" type="string" required>
+  An identifier for the Spigot server sending the packet (e.g. `"pvp-1"`, `"lobby"`, `"admin"`). Passed to `handleRequest()` as the `source` parameter.
+</ParamField>
+
+<ParamField path="type" type="string" required>
+  The `RequestType` value identifying the operation to perform. One of: `GET_DATA`, `SET_DATA`, `REMOVE_DATA`, `INCREMENT_DATA`, `UPDATE_DATA`, `RANKING`, `RANK_FINDER`, `BROADCAST`, `LOAD_CACHE`.
+</ParamField>
+
+<ParamField path="data" type="object" required>
+  The request payload. Must include the `isId` field value for all single-document operations. For `SET_DATA`, include all fields to write.
+</ParamField>
+
+<ParamField path="timestamp" type="number" required>
+  The sender's current Unix time in milliseconds. Used by the timestamp validation stage. Must be within 5 minutes of Nexus Core's server clock.
+</ParamField>
+
+<ParamField path="nonce" type="string" required>
+  A single-use UUID string for replay protection. Each nonce can only appear once within the timestamp window.
+</ParamField>
+
+<ParamField path="sig" type="string">
+  Base64-encoded HMAC-SHA256 signature of the packet contents, excluding the `sig` field itself. Required when `NEXUS_SIGNING_KEY` is configured. Omit only in development environments.
+</ParamField>
+
+## Outgoing Packet (Nexus Core to Spigot)
+
+```json
+{
+  "protocol": 100,
+  "source": "nexus",
+  "type": "BROADCAST",
+  "target": "pvp-1",
+  "data": {
+    "uuid": "550e8400-e29b-41d4-a716-446655440000",
+    "kills": 142,
+    "deaths": 38,
+    "balance": 2500.75,
+    "isPremium": true
+  }
+}
+```
+
+### Fields
+
+<ResponseField name="protocol" type="number">
+  The numeric addon ID echoed from the original request.
+</ResponseField>
+
+<ResponseField name="source" type="string">
+  Always `"nexus"` for responses originating from Nexus Core.
+</ResponseField>
+
+<ResponseField name="type" type="string">
+  The response type. Typically `"BROADCAST"` for data responses routed back to the requesting server.
+</ResponseField>
+
+<ResponseField name="target" type="string">
+  The `source` value from the original request packet. Nexus Core publishes the response to this server's Redis channel.
+</ResponseField>
+
+<ResponseField name="data" type="object">
+  The response payload. Contains the complete document fields as stored in MongoDB, with types matching the `@DbDataModels` annotations.
+</ResponseField>
+
+## Related Topics
+
+- [Security](/concepts/security) — how `sig`, `timestamp`, and `nonce` are validated
+- [Request Types](/concepts/request-types) — all valid `type` values and their semantics
+- [Request Lifecycle](/reference/request-lifecycle) — how packets flow from receipt to response

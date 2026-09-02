@@ -1,0 +1,74 @@
+---
+title: "Nexus Core Changelog"
+sidebarTitle: "Changelog"
+description: "Complete version history for Nexus Core, from the first stable release (v1.0.0) through the v1.5 security update, newest first."
+---
+
+This page lists every Nexus Core release, newest first. Breaking behavior changes and security patches are highlighted.
+
+## v1.5 — Security Update
+
+- **HMAC-SHA256 packet signing**: Every inbound packet must carry a Base64 HMAC-SHA256 signature in the `sig` field when `NEXUS_SIGNING_KEY` is configured.
+- **Timestamp validation**: Packets outside the 5-minute clock window are rejected.
+- **Nonce replay protection**: Each nonce UUID can only be used once; expired entries are cleaned up automatically.
+- **Graceful degradation**: When `NEXUS_SIGNING_KEY` is not defined, signature verification is skipped with a one-time warning so existing integrations continue to work without changes.
+
+## v1.4.2
+
+- Made the `NexusApplication` singleton instance `volatile` to prevent stale references in multi-threaded environments.
+- Wrapped `URLClassLoader` with `try-with-resources` to release file handles immediately after JAR loading.
+- Resolved a parallel MongoDB connection race condition by adding a 10-second startup delay to the scheduled task.
+- `getInfluxDBManager()` now returns `Optional<InfluxDBManager>`.
+- Fixed a telemetry bug in `handleIncrementData` where the current payload was replaced with an outdated payload.
+- Improved performance by caching `getApplication()` and `getRedisManager()` calls in local variables.
+- Added early input validation before Redis tasks are started.
+
+## v1.4.1
+
+- Added connection timeout handling for the MongoDB client.
+- Enabled periodic MongoDB health checks through a watchdog system.
+- Added automatic detection of connection failure states.
+- Added a fail-safe shutdown mechanism for critical database failures.
+- Added Swing-based user notifications for critical runtime errors.
+- **Behavior change:** The application now shuts down gracefully if MongoDB becomes unavailable.
+
+## v1.4.0
+
+- **"Zero-Touch" startup**: Redis and MongoDB connection information is now stored in a persistent configuration file and loaded automatically on subsequent launches.
+- **Global Ranking Protocol**: Asynchronous Top-N leaderboard retrieval across all servers with dynamic ASC/DESC sorting support (`RANKING` request type).
+- **Rank Finder Protocol**: Calculates a key's position in the global ranking using optimized MongoDB queries (`RANK_FINDER` request type).
+- Added `.remove(String key)` to `NexusJsonDataContainer` for removing fields before serialization.
+- Resolved Jackson compatibility issues by moving to native Java structures.
+- Improved `CompletableFuture` usage to prevent ranking and position queries from blocking the main communication thread.
+
+## v1.3.0
+
+- Added real-time data flow and inter-instance communication protocols.
+- Added dynamic cache TTL support: each `DataAddon` can now define its own `getCacheTTL()` value.
+- Added L1/L2 cache auto-sync through Redis Keyspace Notifications (`notify-keyspace-events Ex`): when a Redis key expires, the local RAM cache is automatically cleared.
+- Added sliding TTL using touch-to-renew logic: active data stays cached; inactive data is evicted on expiration.
+- Improved inbound/outbound worker threads for non-blocking operation under heavy load.
+- Reduced serialization overhead by caching reflection-based field and annotation scanning inside `DataAddon`.
+
+## v1.2.0
+
+- Added the `INCREMENT_DATA` protocol: atomic numeric field increments without a full `SET_DATA` round trip (supports `int`/`long` and `double`).
+- `ObjectMapper` is now a shared static final constant across all `DataAddon` instances, reducing GC pressure.
+- Field scanning (`getDeclaredFields()`) is performed once and cached using double-checked locking.
+- Stopped unnecessary `modelInitComp()` execution for models read from the L1 in-memory cache.
+- **Bug fixes**: Eliminated a side effect in `modelInit()` that caused silent data corruption under concurrent load; added key-based locking to prevent concurrent increment operations from overwriting each other; fixed a null-unboxing NPE in `handleRemove()`.
+- Migrated all logging to `java.util.logging` with structured `[DataAddon/]` prefixes.
+
+## v1.1.0
+
+- Completely redesigned the `RedisDataContainer` data synchronization layer.
+- **Redis-Master Cache Hierarchy**: Redis is now the single source of truth, with the strict priority order `Redis → L1 Cache → MongoDB`.
+- Keys evicted or expired from Redis are automatically restored from L1, marked as dirty, and written back to MongoDB.
+- The reconciliation task now processes records in batches of 50 to prevent sudden MongoDB load spikes.
+- Added an O(1) reverse index (`id → key`) for `getDataModelFromId()` instead of O(n) linear scanning.
+- **Bug fixes**: Resolved data loss during flush failures, a TOCTOU race condition in `removeModel()`, a potential deadlock during reconciliation, and an issue where `addModelFix()` left Redis outdated.
+
+## v1.0.0 — First Stable Release (April 24)
+
+- Implemented the core data orchestration layer with `GET_DATA`, `SET_DATA`, `REMOVE_DATA`, `UPDATE_DATA`, and the `DataAddon` plugin system.
+- First production-ready stable build.

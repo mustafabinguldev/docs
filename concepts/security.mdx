@@ -1,0 +1,65 @@
+---
+title: "Packet Security and Replay Protection in Nexus Core"
+sidebarTitle: "Security"
+description: "Nexus Core validates every Redis packet through a three-stage chain: HMAC-SHA256 signature, 5-minute timestamp window, and nonce-based replay protection."
+---
+
+Nexus Core validates every inbound Redis packet through a three-stage security chain before any data operation is performed. All three checks must pass in order: signature verification, timestamp validation, and nonce replay detection. A packet that fails any check is silently dropped and logged.
+
+## Stage 1: HMAC-SHA256 Signature Verification
+
+Every packet must include a `sig` field containing a Base64-encoded HMAC-SHA256 signature. The signature is computed over all packet fields except `sig` itself, using the shared `NEXUS_SIGNING_KEY`.
+
+When a packet arrives, Nexus Core:
+
+1. Reads all fields except `sig`.
+2. Recomputes the expected HMAC-SHA256 signature using `NEXUS_SIGNING_KEY`.
+3. Compares it against the received `sig` value.
+4. Rejects the packet immediately if they do not match, and logs a warning.
+
+Set the key before launching Nexus Core and on every Spigot server that sends packets:
+
+```bash
+export NEXUS_SIGNING_KEY="a-long-and-unpredictable-secret-key"
+```
+
+<Warning>
+  `NEXUS_SIGNING_KEY` must be identical across all Spigot servers and the Nexus Core process. Never commit it to version control. Deploy it through a secrets manager or CI/CD environment variable.
+</Warning>
+
+<Note>
+  If `NEXUS_SIGNING_KEY` is not defined, signature verification is disabled and a one-time warning is logged. This behavior is acceptable only during local development. Always configure the key in production.
+</Note>
+
+## Stage 2: Timestamp Validation
+
+Every packet must include a `timestamp` field containing the sender's current Unix time in milliseconds. Nexus Core calculates the absolute difference between the packet timestamp and the server clock. If the difference exceeds **5 minutes**, the packet is rejected.
+
+This prevents intercepted packets from being replayed long after they were originally sent.
+
+<Tip>
+  Keep all server clocks synchronized with NTP. Clock drift beyond 5 minutes causes valid packets to be rejected even when the signature and nonce are correct.
+</Tip>
+
+## Stage 3: Nonce-Based Replay Protection
+
+Every packet must include a `nonce` field containing a unique UUID string. Nexus Core records each seen nonce in an in-memory `ConcurrentHashMap` keyed by nonce value with the packet timestamp. If the same nonce appears a second time, the packet is identified as a replay attack and rejected.
+
+Expired nonce entries are cleaned up automatically based on the timestamp window, so memory usage stays bounded.
+
+## Validation Order
+
+An incoming packet is checked in this order. The first failing check ends processing:
+
+1. Does the `sig` field exist, and does HMAC verification pass?
+2. Does the `timestamp` field exist, and is it within the 5-minute window?
+3. Does the `nonce` field exist, and has it not been used before?
+4. Is the `type` field a valid `RequestType`?
+
+If all four checks pass, normal processing continues.
+
+## Related Topics
+
+- [Configuration](/configuration) — how to set `NEXUS_SIGNING_KEY` and other startup parameters
+- [Packet Structure](/reference/packet-structure) — the `sig`, `timestamp`, and `nonce` field formats
+- [Request Lifecycle](/reference/request-lifecycle) — where the security chain fits in the full request flow

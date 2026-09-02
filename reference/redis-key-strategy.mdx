@@ -1,0 +1,75 @@
+---
+title: "Redis Key Naming Strategy"
+sidebarTitle: "Redis Keys"
+description: "Nexus Core constructs Redis cache keys as {cacheKeyHeaderTag}_{idFieldValue}. Use unique prefixes per addon to prevent cache collisions across your network."
+---
+
+Nexus Core constructs every Redis cache key by combining the addon's `cacheKeyHeaderTag()` value with the runtime value of the `isId` field from the document. Understanding this format lets you inspect or debug the cache directly with `redis-cli` and helps you design addons that do not interfere with each other.
+
+## Key Format
+
+```text
+{cacheKeyHeaderTag}_{idFieldValue}
+```
+
+For example, an addon with `cacheKeyHeaderTag()` returning `"stats"` and an `isId` field value of `"Steve"` produces the key `stats_Steve`.
+
+## Examples
+
+| Addon | `cacheKeyHeaderTag()` | `isId` Field Value | Full Redis Key |
+| --- | --- | --- | --- |
+| `PlayerStatsAddon` | `stats` | `Steve` | `stats_Steve` |
+| `GuildAddon` | `guild` | `Darkland` | `guild_Darkland` |
+| `EconomyAddon` | `eco` | `550e8400...` | `eco_550e8400...` |
+
+## Cache Entry Format
+
+Each Redis key maps to a serialized JSON string containing the complete document. For example:
+
+```json
+{
+  "uuid": "550e8400-e29b-41d4-a716-446655440000",
+  "kills": 142,
+  "deaths": 38,
+  "balance": 2500.75,
+  "isPremium": true
+}
+```
+
+Cache entries are automatically invalidated during `SET_DATA`, `UPDATE_DATA`, `INCREMENT_DATA`, and `REMOVE_DATA` operations.
+
+## Avoiding Key Collisions
+
+<Warning>
+  Two addons using the same `cacheKeyHeaderTag()` value can overwrite each other's Redis entries. This causes one addon to read data belonging to a different collection and silently return corrupted results.
+</Warning>
+
+To prevent collisions:
+
+- Use a prefix that clearly identifies both the addon and its collection (e.g. `pvp_stats`, `guild_data`, `eco_balance`).
+- Avoid generic prefixes like `stats`, `data`, or `player` that other addons are likely to also use.
+- Maintain a central registry (alongside your addon ID constants) that lists all tags in use.
+
+```java
+// Good
+public String cacheKeyHeaderTag() { return "pvp_stats"; }
+
+// Risky — another addon may use the same prefix
+public String cacheKeyHeaderTag() { return "stats"; }
+```
+
+## Inspecting the Cache
+
+You can inspect live cache entries directly with `redis-cli`:
+
+```bash
+redis-cli GET stats_Steve
+redis-cli TTL stats_Steve
+redis-cli KEYS "stats_*"
+```
+
+## Related Topics
+
+- [Annotations Reference](/addons/annotations) — how `isId` fields are declared
+- [Cache Strategy](/concepts/cache-strategy) — TTL, invalidation, and auto-sync
+- [Best Practices](/addons/best-practices) — distinctive prefix guidelines

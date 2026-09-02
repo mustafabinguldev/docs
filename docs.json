@@ -1,0 +1,63 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "luma",
+  "name": "Nexus Core",
+  "colors": {
+    "primary": "#6366f1",
+    "light": "#818cf8",
+    "dark": "#4f46e5"
+  },
+  "navigation": {
+    "pages": [
+      {
+        "group": "Getting Started",
+        "pages": [
+          "index",
+          "quickstart"
+        ]
+      }
+    ],
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "index",
+              "quickstart",
+              "configuration"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/request-types",
+              "concepts/cache-strategy",
+              "concepts/security"
+            ]
+          },
+          {
+            "group": "Building Addons",
+            "pages": [
+              "addons/overview",
+              "addons/data-addon-api",
+              "addons/annotations",
+              "addons/best-practices"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/packet-structure",
+              "reference/redis-key-strategy",
+              "reference/request-lifecycle",
+              "reference/changelog"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

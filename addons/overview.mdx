@@ -1,0 +1,108 @@
+---
+title: "DataAddon Overview: Defining Data Schemas in Nexus Core"
+sidebarTitle: "Overview"
+description: "A DataAddon is the fundamental data unit in Nexus Core. Each addon maps to one MongoDB collection and handles all data operations for that collection."
+---
+
+A DataAddon is the fundamental building block in Nexus Core. Each addon represents a single MongoDB document collection, defines its schema through `@DbDataModels` annotations, controls its own Redis cache key prefix, and can optionally gate or intercept incoming requests via `handleRequest()`. Splitting your data model into focused addons keeps the orchestration layer modular and easy to maintain.
+
+## Creating a DataAddon in Three Steps
+
+<Steps>
+  <Step title="Extend DataAddon and implement the abstract methods">
+    Create a class that extends `DataAddon` and implement five required methods: `addonId()`, `addonName()`, `getDatabase()`, `getCollection()`, `cacheKeyHeaderTag()`, and `handleRequest()`. These tell Nexus Core which MongoDB database and collection to use, how to prefix Redis cache keys, and whether to allow or reject a given request.
+  </Step>
+  <Step title="Annotate fields with @DbDataModels">
+    Declare your document fields as class members and annotate each one with `@DbDataModels`. Use `isId = true` on the primary key field (exactly one per addon) and `defaultValue` on all other fields to specify fallback values for incoming packets that omit them.
+  </Step>
+  <Step title="Register the addon on startup">
+    Call `NexusApplication.getInstance().getProtocolHandler().registerAddon(new YourAddon())` during application startup. After registration, Nexus Core automatically routes all matching requests to your addon's MongoDB collection and Redis keyspace.
+  </Step>
+</Steps>
+
+## Complete Example: PlayerStatsAddon
+
+The following addon stores player statistics in the `player_stats` collection inside the `nexus_core_db` database. It uses the player UUID as the primary key and prefixes Redis cache entries with `stats`.
+
+```java
+package network.darkland.addons;
+
+import network.darkland.protocol.DataAddon;
+import network.darkland.protocol.NexusJsonDataContainer;
+import network.darkland.protocol.backup.annotations.DbDataModels;
+
+public class PlayerStatsAddon extends DataAddon {
+
+    @Override
+    public int addonId() {
+        return 100; // Must be globally unique across all addons
+    }
+
+    @Override
+    public String addonName() {
+        return "Player Stats";
+    }
+
+    @Override
+    public String getDatabase() {
+        return "nexus_core_db";
+    }
+
+    @Override
+    public String getCollection() {
+        return "player_stats";
+    }
+
+    @Override
+    public String cacheKeyHeaderTag() {
+        return "stats"; // Redis key: "stats_<uuid>"
+    }
+
+    @DbDataModels(isId = true)
+    private String uuid;
+
+    @DbDataModels(defaultValue = "0", isId = false)
+    private int kills;
+
+    @DbDataModels(defaultValue = "0", isId = false)
+    private int deaths;
+
+    @DbDataModels(defaultValue = "0.0", isId = false)
+    private double balance;
+
+    @DbDataModels(defaultValue = "false", isId = false)
+    private boolean isPremium;
+
+    @Override
+    public boolean handleRequest(String source, RequestType requestType,
+                                 NexusJsonDataContainer data) {
+        // Only allow delete operations from the "admin" server
+        if (requestType == RequestType.REMOVE_DATA) {
+            return source.equals("admin");
+        }
+        return true;
+    }
+}
+```
+
+## Registering the Addon
+
+```java
+NexusApplication.getInstance()
+    .getProtocolHandler()
+    .registerAddon(new PlayerStatsAddon());
+```
+
+Once registered, Nexus Core processes all `GET_DATA`, `SET_DATA`, `REMOVE_DATA`, `INCREMENT_DATA`, and other request types for protocol ID `100` against the `player_stats` collection automatically.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="DataAddon API Reference" icon="book" href="/addons/data-addon-api">
+    Full reference for every abstract method, the handleRequest lifecycle, and NexusJsonDataContainer.
+  </Card>
+
+  <Card title="Annotations Reference" icon="at" href="/addons/annotations">
+    The complete @DbDataModels syntax, supported field types, and validation rules.
+  </Card>
+</CardGroup>

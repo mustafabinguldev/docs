@@ -1,0 +1,60 @@
+---
+title: "Nexus Core: Centralized Cache Orchestration for Minecraft"
+sidebarTitle: "Introduction"
+description: "Nexus Core is a standalone Java orchestration layer that centralizes all data operations for distributed Minecraft server networks over Redis pub/sub."
+---
+
+Nexus Core is a standalone Java application that acts as a centralized data orchestration layer for distributed Minecraft server networks. Instead of every Spigot server maintaining its own MongoDB connection pool and managing its own cache, all data operations are delegated to Nexus Core through a Redis pub/sub messaging layer. Think of it as a microservice built specifically for Minecraft infrastructure: Nexus Core owns all data, while your Spigot servers act as thin clients.
+
+## Why Nexus Core?
+
+<CardGroup cols={3}>
+  <Card title="Single Connection Pool" icon="database">
+    Every Spigot server used to maintain its own MongoDB connection pool. Nexus Core replaces all of them with a single, optimized pool.
+  </Card>
+
+  <Card title="Consistent Cache" icon="layer-group">
+    Per-server caches go stale and diverge. Nexus Core provides a centralized Redis cache that is always consistent across every node.
+  </Card>
+
+  <Card title="Centralized Data Logic" icon="code">
+    Business rules defined once in a DataAddon are shared everywhere. No more duplicating logic across every server's codebase.
+  </Card>
+</CardGroup>
+
+## How It Works
+
+<Steps>
+  <Step title="Spigot servers publish signed packets to Redis">
+    Each game server constructs a JSON packet with the request type, payload, and HMAC-SHA256 security fields, then publishes it to the shared Redis channel.
+  </Step>
+  <Step title="Nexus Core validates and routes the packet">
+    Nexus Core verifies the signature, timestamp, and nonce, then looks up the matching DataAddon in its registry.
+  </Step>
+  <Step title="Data is served from Redis or MongoDB">
+    The addon checks the Redis L2 cache first. On a cache miss, it queries MongoDB and writes the result back to cache.
+  </Step>
+  <Step title="Response is published back to the source server">
+    The result is serialized and published to the originating server's Redis channel.
+  </Step>
+</Steps>
+
+## Explore the Docs
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build and run Nexus Core and register 
+  </Card>
+
+  <Card title="System Architecture" icon="diagram-project" href="/concepts/architecture">
+    Understand the hub-and-spoke design connecting Spigot servers, Redis, and MongoDB.
+  </Card>
+
+  <Card title="Building Addons" icon="puzzle-piece" href="/addons/overview">
+    Learn how to define data schemas, implement request gating, and register addons.
+  </Card>
+
+  <Card title="Packet Structure" icon="file-code" href="/reference/packet-structure">
+    Reference for the JSON packet format and all security fields exchanged over Redis.
+  </Card>
+</CardGroup>

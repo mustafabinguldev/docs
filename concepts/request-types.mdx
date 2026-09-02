@@ -1,0 +1,86 @@
+---
+title: "Request Types in Nexus Core"
+sidebarTitle: "Request Types"
+description: "Nexus Core supports nine request types covering CRUD, atomic increments, leaderboard queries, broadcasting, and cache preloading over Redis pub/sub."
+---
+
+Every packet sent to Nexus Core includes a `type` field that identifies the operation to perform. Nexus Core supports nine request types, each with a defined MongoDB operation and cache behavior. Understanding these types helps you choose the right one for each use case and reason about performance and consistency trade-offs.
+
+## All Request Types
+
+| Type | Description | MongoDB Operation | Cache Behavior |
+| --- | --- | --- | --- |
+| `GET_DATA` | Retrieves a document by its ID field | `findOne()` | Read-through |
+| `SET_DATA` | Inserts or updates a document | `replaceOne(upsert)` | Write-through |
+| `REMOVE_DATA` | Deletes a document by its ID | `deleteOne()` | Invalidate |
+| `INCREMENT_DATA` | Atomically increments a numeric field | `findOne()` + in-memory mutation | Write-through |
+| `UPDATE_DATA` | Partially updates fields in an existing document | `updateOne()` | Write-through |
+| `RANKING` | Retrieves a global Top-N leaderboard (ASC or DESC) | Sorted query | Bypass |
+| `RANK_FINDER` | Calculates a key's position in the global ranking | Optimized query | Bypass |
+| `BROADCAST` | Sends data to a target server via Redis pub/sub | None | Bypass |
+| `LOAD_CACHE` | Preloads a document into memory by ID | `findOne()` | Warm |
+
+<Note>
+  `RANKING` and `RANK_FINDER` bypass the cache entirely to guarantee a consistent global view of sorted data. `BROADCAST` has no MongoDB operation — it only routes a payload to another server's Redis channel.
+</Note>
+
+## Common Request Types in Detail
+
+### GET_DATA
+
+Retrieves a single document by its `isId` field value. Nexus Core checks the Redis L2 cache first. On a cache miss, it queries MongoDB and writes the result back to both cache layers before returning.
+
+Example `data` payload:
+
+```json
+{
+  "uuid": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+### SET_DATA
+
+Inserts a new document or replaces an existing one using `replaceOne` with upsert. The updated document is written through to both Redis and the L1 in-memory cache.
+
+Example `data` payload:
+
+```json
+{
+  "uuid": "550e8400-e29b-41d4-a716-446655440000",
+  "kills": 142,
+  "deaths": 38,
+  "balance": 2500.75,
+  "isPremium": true
+}
+```
+
+### REMOVE_DATA
+
+Deletes a document by its ID and invalidates the corresponding Redis and L1 cache entries.
+
+Example `data` payload:
+
+```json
+{
+  "uuid": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+### INCREMENT_DATA
+
+Atomically increments a numeric field (`int`, `long`, or `double`) without requiring a full `SET_DATA` round trip. Nexus Core reads the document, applies the mutation in memory, and writes the result back through the cache.
+
+Example `data` payload:
+
+```json
+{
+  "uuid": "550e8400-e29b-41d4-a716-446655440000",
+  "kills": 1
+}
+```
+
+## Related Topics
+
+- [Request Lifecycle](/reference/request-lifecycle) — how each type flows through validation, routing, and cache
+- [Packet Structure](/reference/packet-structure) — the full JSON format for incoming and outgoing packets
+- [Cache Strategy](/concepts/cache-strategy) — read-through, write-through, and invalidation behaviors

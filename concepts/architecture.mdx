@@ -1,0 +1,74 @@
+---
+title: "System Architecture of Nexus Core"
+sidebarTitle: "Architecture"
+description: "Understand how Nexus Core sits between your Spigot game servers and MongoDB, routing all data through a centralized Redis pub/sub messaging layer."
+---
+
+Nexus Core is a standalone Java application that acts as the data brain for a distributed Minecraft server network. Multiple Spigot game servers (Lobby, PvP, Survival, and so on) publish request packets to a shared Redis channel. Nexus Core subscribes to that channel, validates each packet through a three-stage security chain, and routes it to the correct DataAddon. The addon reads from or writes to MongoDB, updates the Redis cache, and publishes the response back to the originating server.
+
+## Architecture Diagram
+
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│   ┌──────────────┐    ┌──────────────┐    ┌──────────────┐     │
+│   │  Spigot #1   │    │  Spigot #2   │    │  Spigot #3   │     │
+│   │  (Lobby)     │    │  (PvP)       │    │  (Survival)  │     │
+│   └──────┬───────┘    └──────┬───────┘    └──────┬───────┘     │
+│          │                   │                   │             │
+│          └───────────────────┼───────────────────┘             │
+│                              │ Redis Pub/Sub (signed packets)  │
+│                    ┌─────────▼──────────┐                      │
+│                    │    Redis Broker     │                      │
+│                    │   (Message Layer)   │                      │
+│                    └─────────┬──────────┘                      │
+│                              │                                  │
+│                    ┌─────────▼──────────┐                      │
+│                    │   ⬡ NEXUS CORE ⬡   │                      │
+│                    │                    │                      │
+│                    │  ┌──────────────┐  │                      │
+│                    │  │   Security   │  │  HMAC / Nonce /      │
+│                    │  │ Verification │  │  Timestamp checks    │
+│                    │  └──────┬───────┘  │                      │
+│                    │  ┌──────▼───────┐  │                      │
+│                    │  │ AddonRegistry│  │                      │
+│                    │  │  Addon #100  │  │                      │
+│                    │  │  Addon #200  │  │                      │
+│                    │  │  Addon #500  │  │                      │
+│                    │  └──────┬───────┘  │                      │
+│                    └─────────┼──────────┘                      │
+│                              │ CRUD Operations                  │
+│                    ┌─────────▼──────────┐                      │
+│                    │      MongoDB        │                      │
+│                    │  (nexus_core_db)    │                      │
+│                    └────────────────────┘                      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Three Layers
+
+### Transport Layer (Redis pub/sub)
+
+Redis provides the message bus that connects every Spigot node to Nexus Core. All requests, responses, and broadcasts share the same pub/sub fabric. Redis also serves as the shared L2 cache and publishes keyspace notifications that Nexus Core uses to keep L1 in-memory caches synchronized.
+
+### Nexus Core
+
+The security chain runs first on every inbound packet: HMAC-SHA256 signature verification, a 5-minute timestamp window, and nonce replay detection. After validation, the AddonRegistry dispatches the request to the matching DataAddon by protocol ID. The addon then consults the cache hierarchy and performs the required MongoDB operation.
+
+### Persistence Layer (MongoDB)
+
+MongoDB is the durable backing store. Nexus Core maintains the only connection pool to MongoDB, which eliminates per-server connection overhead regardless of how many Spigot instances are running. DataAddons declare their target database and collection; the framework handles all serialization.
+
+## Why This Design?
+
+| Problem | Without Nexus Core | With Nexus Core |
+| --- | --- | --- |
+| DB Connections | Every server has its own connection pool | One optimized, shared pool |
+| Cache Consistency | Per-server caches diverge and go stale | Centralized Redis cache, always consistent |
+| Data Logic | Duplicated across every server codebase | Defined once in a DataAddon, shared everywhere |
+
+## Related Topics
+
+- [Request Types](/concepts/request-types) — the nine packet types Nexus Core accepts and routes
+- [Cache Strategy](/concepts/cache-strategy) — how L1 in-memory, L2 Redis, and MongoDB interact
+- [Security](/concepts/security) — the three-stage packet validation chain

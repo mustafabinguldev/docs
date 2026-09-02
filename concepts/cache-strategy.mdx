@@ -1,0 +1,71 @@
+---
+title: "Cache Strategy and Hierarchy in Nexus Core"
+sidebarTitle: "Cache Strategy"
+description: "Nexus Core uses a two-level cache (Redis L2 and in-memory L1) with write-through, read-through, and automatic invalidation to keep data consistent across all servers."
+---
+
+Nexus Core caches data in two layers so your distributed Minecraft network stays fast and consistent. Redis acts as the shared L2 cache across all nodes, while each Nexus Core process keeps a local L1 in-memory cache for the hottest data. Requests are resolved in a strict priority order: Redis first, then local memory, then MongoDB.
+
+## Cache Hierarchy
+
+The three-tier data path with Redis as the single source of truth:
+
+<Steps>
+  <Step title="L2: Redis cache">
+    Shared across every server in the network. Holds serialized documents with per-addon TTL. All Spigot servers indirectly see the same state because all writes flow through Nexus Core and land here first.
+  </Step>
+  <Step title="L1: In-memory cache">
+    Local to the Nexus Core process. Stores deserialized objects for the fastest possible access. Automatically invalidated when the corresponding Redis key expires or is deleted.
+  </Step>
+  <Step title="MongoDB persistence">
+    The durable backing store. Queried only when data is absent from both cache layers, and updated on every write-through operation.
+  </Step>
+</Steps>
+
+## Cache Behavior by Request Type
+
+| Request Type | Cache Behavior | Description |
+| --- | --- | --- |
+| `GET_DATA` | Read-through | Checks L1, then L2 Redis, then MongoDB. Missing data is backfilled into both cache layers. |
+| `SET_DATA` | Write-through | Written to MongoDB, then to Redis L2, then to L1. |
+| `UPDATE_DATA` | Write-through | Partial update applied to MongoDB, then synced to both cache layers. |
+| `INCREMENT_DATA` | Write-through | In-memory mutation result written back through L2 and L1. |
+| `REMOVE_DATA` | Invalidation | Deleted from MongoDB; both L2 and L1 entries are cleared. |
+| `LOAD_CACHE` | Warm | Document fetched from MongoDB and placed into L2 and L1 without a response payload. |
+
+## Dynamic TTL
+
+Every DataAddon defines its own cache lifetime by overriding `getCacheTTL()`. The returned value controls how long documents stay in Redis before automatic expiration.
+
+```java
+@Override
+public long getCacheTTL() {
+    return 300; // 5 minutes, in seconds
+}
+```
+
+Choose a short TTL for rapidly changing data (live player stats) and a longer TTL for data that changes rarely (player profiles, global configuration documents).
+
+## L1 and L2 Auto-sync
+
+Nexus Core keeps L1 and L2 synchronized using Redis Keyspace Notifications. Enable them on your Redis instance with:
+
+```text
+notify-keyspace-events Ex
+```
+
+When a Redis key expires or is deleted, Nexus Core receives the event and automatically invalidates the matching entry in the local L1 cache. This guarantees no Nexus Core process serves stale data after a TTL expiration or an explicit removal.
+
+## Sliding TTL
+
+Nexus Core uses a touch-to-renew model: every time a document is read from Redis, its TTL is refreshed. Frequently accessed data stays in cache indefinitely, while cold data expires naturally and frees memory.
+
+<Tip>
+  Use `LOAD_CACHE` at server startup to pre-warm frequently accessed documents such as player profiles or leaderboard data. This avoids cold-start latency on the first real requests.
+</Tip>
+
+## Related Topics
+
+- [Request Types](/concepts/request-types) — which request types trigger which cache behavior
+- [DataAddon API](/addons/data-addon-api) — how to implement `getCacheTTL()` on your addon
+- [Redis Key Strategy](/reference/redis-key-strategy) — how cache keys are constructed

@@ -1,0 +1,136 @@
+---
+title: "DataAddon API Reference"
+sidebarTitle: "DataAddon API"
+description: "Full reference for the DataAddon abstract class: the five required methods, handleRequest lifecycle, and the NexusJsonDataContainer payload type."
+---
+
+The `DataAddon` abstract class is the contract every addon must implement. It declares six abstract methods that tell Nexus Core how to identify the addon, where to persist data, how to key the cache, and whether to process a given request. All methods are called by the framework; you never invoke them directly.
+
+## Abstract Methods
+
+### `addonId()`
+
+```java
+public abstract int addonId();
+```
+
+Returns the globally unique numeric ID for this addon. Remote clients send this value as the `protocol` field in their packets. Nexus Core uses it to look up the addon in the registry.
+
+<Warning>
+  No two registered addons may share the same `addonId()` value. Use a constants class to avoid collisions. See [Best Practices](/addons/best-practices).
+</Warning>
+
+### `addonName()`
+
+```java
+public abstract String addonName();
+```
+
+Returns a human-readable name displayed in the dashboard and log output. This value is for observability only and does not affect routing.
+
+### `getDatabase()`
+
+```java
+public abstract String getDatabase();
+```
+
+Returns the name of the MongoDB database this addon reads from and writes to.
+
+### `getCollection()`
+
+```java
+public abstract String getCollection();
+```
+
+Returns the MongoDB collection name. Nexus Core performs all CRUD operations against this collection.
+
+### `cacheKeyHeaderTag()`
+
+```java
+public abstract String cacheKeyHeaderTag();
+```
+
+Returns the prefix used when constructing Redis cache keys. The full key format is `{tag}_{idFieldValue}`. Use a distinctive, addon-specific prefix to prevent key collisions with other addons.
+
+### `handleRequest()`
+
+```java
+public abstract boolean handleRequest(
+    String source,
+    RequestType requestType,
+    NexusJsonDataContainer data
+);
+```
+
+Called before every data operation, after the security validation chain. Use it to gate requests based on the originating server or the request type.
+
+- `source` — the ID of the Spigot server that sent the packet (e.g. `"pvp-1"`)
+- `requestType` — the operation being requested (`GET_DATA`, `SET_DATA`, `REMOVE_DATA`, etc.)
+- `data` — the payload container from the incoming packet
+
+Returning `true` allows processing to continue. Returning `false` rejects the request and sends an empty response to the source server.
+
+<Note>
+  `handleRequest()` runs synchronously on the inbound processing thread, before any Redis or MongoDB I/O. Keep it fast: perform only lightweight validation and never call external APIs, sleep, or perform database queries inside it.
+</Note>
+
+## handleRequest Example
+
+```java
+@Override
+public boolean handleRequest(String source, RequestType requestType,
+                             NexusJsonDataContainer data) {
+    // Only allow delete operations from the "admin" server
+    if (requestType == RequestType.REMOVE_DATA) {
+        return source.equals("admin");
+    }
+    return true;
+}
+```
+
+## NexusJsonDataContainer
+
+`NexusJsonDataContainer` is the payload wrapper passed to `handleRequest()` and used internally during request processing. It holds the fields from the incoming packet's `data` object as a map. Use it to inspect or validate field values before allowing the request to proceed.
+
+## Complete Example
+
+```java
+public class PlayerStatsAddon extends DataAddon {
+
+    @Override
+    public int addonId()            { return 100; }
+
+    @Override
+    public String addonName()       { return "Player Stats"; }
+
+    @Override
+    public String getDatabase()     { return "nexus_core_db"; }
+
+    @Override
+    public String getCollection()   { return "player_stats"; }
+
+    @Override
+    public String cacheKeyHeaderTag() { return "stats"; }
+
+    @DbDataModels(isId = true)
+    private String uuid;
+
+    @DbDataModels(defaultValue = "0", isId = false)
+    private int kills;
+
+    @Override
+    public boolean handleRequest(String source, RequestType requestType,
+                                 NexusJsonDataContainer data) {
+        if (requestType == RequestType.REMOVE_DATA) {
+            return source.equals("admin");
+        }
+        return true;
+    }
+}
+```
+
+## Related Topics
+
+- [Annotations Reference](/addons/annotations) — the `@DbDataModels` syntax and supported types
+- [Best Practices](/addons/best-practices) — ID constants, UUID keys, fast handleRequest, and more
+- [Request Types](/concepts/request-types) — all nine `RequestType` values and their semantics

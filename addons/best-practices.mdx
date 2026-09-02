@@ -1,0 +1,90 @@
+---
+title: "Best Practices for Building Nexus Core Addons"
+sidebarTitle: "Best Practices"
+description: "Guidelines for keeping your Nexus Core addons reliable, performant, and secure across a distributed Minecraft server network."
+---
+
+These guidelines help you build addons that stay consistent under load, avoid cache collisions, and keep your server network secure. Apply them from the first addon you write.
+
+## 1. Keep Addon IDs in a Constants File
+
+Hard-coding magic numbers across multiple addons leads to collisions and makes refactors error-prone. Maintain a single constants class that every addon and Spigot plugin references.
+
+```java
+public final class AddonIds {
+    public static final int PLAYER_STATS = 100;
+    public static final int GUILDS       = 200;
+    public static final int ECONOMY      = 300;
+    public static final int EXAMPLE      = 500;
+
+    private AddonIds() {}
+}
+```
+
+```java
+@Override
+public int addonId() {
+    return AddonIds.PLAYER_STATS;
+}
+```
+
+## 2. Use UUIDs as ID Fields
+
+Player display names, guild tags, and world names can change over time. If you use a mutable value as the `isId` field, you risk creating duplicate MongoDB documents and stale cache entries. Always prefer a stable, immutable identifier.
+
+```java
+@DbDataModels(isId = true)
+private String uuid;   // Stable — preferred
+
+@DbDataModels(isId = true)
+private String name;   // Risky — player names can change
+```
+
+## 3. Keep `handleRequest()` Fast
+
+`handleRequest()` runs synchronously on the inbound packet-processing thread before any Redis or MongoDB I/O. Blocking here delays every request targeting this addon. Perform only lightweight validation: source checks, field presence tests, and enum comparisons.
+
+```java
+@Override
+public boolean handleRequest(String source, RequestType requestType,
+                             NexusJsonDataContainer data) {
+    // Fast validation only — no I/O here
+    if (requestType == RequestType.REMOVE_DATA) {
+        return source.equals("admin");
+    }
+    return true;
+}
+```
+
+Never call external APIs, sleep, lock on shared state, or perform database queries inside `handleRequest()`.
+
+## 4. Use Distinctive `cacheKeyHeaderTag` Values
+
+The Redis cache key format is `{cacheKeyHeaderTag()}_{idFieldValue}`. Two addons sharing the same prefix will overwrite each other's cache entries and silently serve incorrect data.
+
+```java
+// Good — specific and unlikely to conflict
+public String cacheKeyHeaderTag() { return "pvp_stats"; }
+
+// Risky — another addon may already use "stats"
+public String cacheKeyHeaderTag() { return "stats"; }
+```
+
+## 5. Never Call MongoDB Directly from Spigot Plugins
+
+The entire purpose of Nexus Core is centralized data access. Bypassing it by connecting a Spigot plugin directly to MongoDB breaks cache consistency, introduces a second connection pool, and duplicates data logic. Always route operations through Redis packets.
+
+## 6. Always Define `NEXUS_SIGNING_KEY` in Production
+
+When `NEXUS_SIGNING_KEY` is not configured, signature verification is disabled. Your network becomes vulnerable to forged and replayed packets. Set a strong, unique key before deploying and never hardcode it in source files or version control.
+
+```bash
+export NEXUS_SIGNING_KEY="your-strong-random-secret-here"
+java -jar target/nexus-core-4.0.jar
+```
+
+## Related Topics
+
+- [Security](/concepts/security) — how HMAC signing, timestamp validation, and nonce protection work
+- [DataAddon API](/addons/data-addon-api) — the full abstract method reference
+- [Annotations](/addons/annotations) — `@DbDataModels` syntax and supported types
