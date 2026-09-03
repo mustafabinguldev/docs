@@ -93,7 +93,7 @@ This guide assumes Nexus Core is already installed and running. If not, follow t
   <Step title="Send a signed request from your Spigot server">
     On the Spigot side, construct a signed JSON packet and publish it to the Nexus Redis channel. As of v1.5.1, Nexus Core also signs its outgoing responses, so your client must be ready to verify the `sig`, `timestamp`, and `nonce` fields on the response.
 
-    Example `GET_DATA` request:
+    `GET_DATA` request:
 
     ```json
     {
