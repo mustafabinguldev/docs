@@ -1,14 +1,14 @@
 ---
 title: "Installing Nexus Core"
 sidebarTitle: "Installation"
-description: "Download, build, and run Nexus Core v1.5.1 from source using Java 21 and Maven. Covers prerequisites, build steps, and launching the web panel."
+description: "Install Nexus Core v1.5.1 from source with Maven or from a pre-built Docker Compose stack. Covers prerequisites, build steps, VNC setup, and the web panel."
 ---
 
-Nexus Core is distributed as a self-contained fat JAR built with Maven. Starting from v1.5, it ships with a Spring Boot web panel that replaces the legacy Swing dashboard. This page covers everything you need to get the application running from scratch.
+Nexus Core can be installed in two ways: built from source with Maven, or deployed as a full Docker Compose stack that automatically starts Nexus Core, Redis, and MongoDB together. Both approaches are covered below.
 
-## Prerequisites
+## Option A: Manual Installation (Maven)
 
-Before you begin, make sure the following are available on your system:
+### Prerequisites
 
 | Requirement | Minimum Version | Notes |
 | --- | --- | --- |
@@ -154,6 +154,167 @@ To keep Nexus Core running after you close the terminal, use `nohup` or a system
 <Accordion title="Packets are rejected even with the correct key">
   Timestamp drift is the most common cause. Nexus Core rejects packets older than 5 minutes. Run `ntpdate` or enable an NTP service (`timedatectl set-ntp true`) on all hosts.
 </Accordion>
+
+## Option B: Docker Compose Installation
+
+The Docker Compose stack builds Nexus Core from source inside a container and starts **Redis**, **MongoDB**, and **Nexus Core** together, with health checks, persistent volumes, and automatic service discovery.
+
+### Prerequisites
+
+| Requirement | Notes |
+| --- | --- |
+| Docker Desktop or Docker Engine | Any recent stable version |
+| Docker Compose (v2) | Verify with `docker compose version` |
+| A VNC client | Required for the initial setup wizard (e.g. RealVNC, TigerVNC, Remmina) |
+
+```bash
+docker --version
+docker compose version
+```
+
+### Step 1: Clone the Repository
+
+```bash
+git clone https://github.com/mustafabinguldev/nexus-cache-orchestrator.git
+cd nexus-cache-orchestrator
+```
+
+### Step 2: Create a `.env` File
+
+Create a `.env` file in the project root to set credentials and the VNC password:
+
+```env
+MONGO_ROOT_USER=nexus
+MONGO_ROOT_PASSWORD=your_secure_password
+VNC_PASSWORD=your_secure_vnc_password
+```
+
+<Warning>
+  Always use strong, unique passwords in production. Never commit the `.env` file to version control — add it to `.gitignore`.
+</Warning>
+
+### Step 3: Build and Start the Stack
+
+```bash
+docker compose up -d --build
+```
+
+Docker pulls the base images, builds Nexus Core from source, and starts three containers:
+
+| Container | Description |
+| --- | --- |
+| `nexus-core` | The Nexus Core orchestrator (ports 8080 and 5900) |
+| `nexus-redis` | Redis 7 with AOF persistence (port 6379) |
+| `nexus-mongo` | MongoDB 7 with a root user (port 27017) |
+
+Nexus Core only starts after both Redis and MongoDB pass their health checks.
+
+Check that all three containers are running:
+
+```bash
+docker compose ps
+```
+
+### Step 4: Connect via VNC for Initial Setup
+
+On first launch, Nexus Core presents an interactive setup wizard over VNC. Connect your VNC client to:
+
+```text
+localhost:5900
+```
+
+Use the `VNC_PASSWORD` you set in the `.env` file. Inside the VNC session, the setup wizard asks for Redis and MongoDB connection details. Use the **Docker service names** as hostnames — not `localhost`:
+
+| Field | Value |
+| --- | --- |
+| Redis Host | `redis` |
+| MongoDB URI | `mongodb://nexus:nexus_pw@mongo:27017/nexus_core_db?authSource=admin` |
+| Server Port | `8080` |
+
+<Note>
+  Inside the Docker network, containers reach each other by service name (`redis`, `mongo`). Using `localhost` here will not work.
+</Note>
+
+### Step 5: Access the Web Panel
+
+After completing the setup wizard, open your browser and navigate to:
+
+```text
+http://localhost:8080
+```
+
+The Spring Boot web administration dashboard is now available.
+
+## Exposed Ports
+
+| Service | Port | Description |
+| --- | --- | --- |
+| Web Dashboard | `8080` | Nexus Core web administration panel |
+| VNC | `5900` | Initial setup environment |
+| Redis | `6379` | Redis cache (mapped to host) |
+| MongoDB | `27017` | MongoDB database (mapped to host) |
+
+## Useful Docker Commands
+
+```bash
+# View running containers
+docker compose ps
+
+# Stream all logs
+docker compose logs -f
+
+# Stream only Nexus Core logs
+docker compose logs -f nexus-core
+
+# Stop all services (data is preserved)
+docker compose down
+
+# Restart the stack
+docker compose restart
+
+# Rebuild after a code update
+docker compose up -d --build
+```
+
+## Persistent Data
+
+Redis and MongoDB store data in named Docker volumes (`redis-data` and `mongo-data`). Stopping the stack with `docker compose down` preserves all data. To wipe all volumes and start fresh:
+
+```bash
+docker compose down -v
+```
+
+<Warning>
+  Running `docker compose down -v` permanently deletes all Redis and MongoDB data. Use it only when you intend a full reset.
+</Warning>
+
+## Docker Troubleshooting
+
+<Accordion title="Nexus Core container starts but exits immediately">
+  Redis or MongoDB may not have passed their health checks in time. Check their status with `docker compose ps` and inspect their logs with `docker compose logs nexus-redis` or `docker compose logs nexus-mongo`. The `depends_on` health checks require both services to respond before Nexus Core starts.
+</Accordion>
+
+<Accordion title="Cannot connect to VNC on port 5900">
+  Confirm the container is running (`docker compose ps`) and that no firewall rule is blocking port 5900. If you changed the default VNC port, update the `ports` mapping in `docker-compose.yml` to match.
+</Accordion>
+
+<Accordion title="MongoDB authentication fails during setup">
+  The default credentials from the `.env` file are `MONGO_ROOT_USER` and `MONGO_ROOT_PASSWORD`. If you changed them, use the updated values in the MongoDB URI. Always include `?authSource=admin` at the end of the URI when using root credentials.
+</Accordion>
+
+<Accordion title="Web panel not accessible at port 8080">
+  Confirm the setup wizard completed successfully inside the VNC session. The web panel only becomes available after Nexus Core has initialized. Also check that no other service on the host is using port 8080.
+</Accordion>
+
+## Docker Security Checklist
+
+Before deploying to production:
+
+- Replace all default credentials in `.env` with strong, unique values.
+- Restrict external access to ports 6379 and 27017 using a firewall — they should not be publicly reachable unless required.
+- Restrict VNC access (port 5900) to trusted IPs or behind a VPN. The VNC session is only needed for initial setup.
+- Protect the web dashboard (port 8080) with HTTPS and access controls.
+- Never commit `.env` or any credentials to version control.
 
 ## Next Steps
 
