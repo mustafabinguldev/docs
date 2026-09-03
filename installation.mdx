@@ -1,0 +1,168 @@
+---
+title: "Installing Nexus Core"
+sidebarTitle: "Installation"
+description: "Download, build, and run Nexus Core v1.5.1 from source using Java 21 and Maven. Covers prerequisites, build steps, and launching the web panel."
+---
+
+Nexus Core is distributed as a self-contained fat JAR built with Maven. Starting from v1.5, it ships with a Spring Boot web panel that replaces the legacy Swing dashboard. This page covers everything you need to get the application running from scratch.
+
+## Prerequisites
+
+Before you begin, make sure the following are available on your system:
+
+| Requirement | Minimum Version | Notes |
+| --- | --- | --- |
+| Java (JDK) | 17 | Java 21 recommended (matches the compiler target in pom.xml) |
+| Maven | 3.8+ | Used to build the fat JAR |
+| Redis | Any recent stable | Accessible on the network; port 6379 by default |
+| MongoDB | Any recent stable | Accessible on the network; port 27017 by default |
+
+## Step 1: Clone the Repository
+
+```bash
+git clone https://github.com/mustafabinguldev/nexus-cache-orchestrator.git
+cd nexus-cache-orchestrator
+```
+
+## Step 2: Set the Signing Key
+
+Set the `NEXUS_SIGNING_KEY` environment variable before building or running. This key is used for HMAC-SHA256 signing on **both** incoming and outgoing Redis messages, so every Spigot server in the network must use the same value.
+
+```bash
+export NEXUS_SIGNING_KEY="a-long-and-unpredictable-secret-key"
+```
+
+<Warning>
+  Never commit this key to version control. Use a secrets manager, CI/CD environment variable, or a `.env` file excluded from Git. Rotate it immediately if it is ever exposed.
+</Warning>
+
+<Note>
+  If `NEXUS_SIGNING_KEY` is not set, both inbound signature verification and outbound message signing are disabled. A one-time warning is logged. This is acceptable only for local development.
+</Note>
+
+## Step 3: Build the JAR
+
+```bash
+mvn clean package -DskipTests
+```
+
+The output JAR is placed at:
+
+```text
+target/nexus-core-4.0.jar
+```
+
+## Step 4: Run Nexus Core
+
+```bash
+java -jar target/nexus-core-4.0.jar
+```
+
+Starting from v1.5, Nexus Core launches a **Spring Boot web panel** instead of the legacy Swing dashboard. The web panel is accessible at:
+
+```text
+http://localhost:8080
+```
+
+Use the web panel to enter your Redis and MongoDB connection details and initialize the engine.
+
+## Step 5: Configure the Connection
+
+In the web panel, provide the following:
+
+| Field | Default | Notes |
+| --- | --- | --- |
+| Redis Host | `127.0.0.1` | Host or IP; port defaults to 6379 |
+| MongoDB URI | `mongodb://localhost:27017` | Full connection string; supports auth and replica sets |
+| Server Port | `8080` | Port the web panel and health check endpoint listen on |
+
+Since v1.4.0, these values are persisted to a local config file. Subsequent launches load them automatically, so the configuration step only needs to be completed once.
+
+## Step 6: Verify the Installation
+
+After initialization you should see log output confirming:
+
+- Redis connection established
+- MongoDB connection established
+- AddonRegistry ready
+- Security layer active (if `NEXUS_SIGNING_KEY` is set)
+
+If MongoDB becomes unavailable at runtime, Nexus Core performs a controlled shutdown and logs the reason. Resolve the connectivity issue and restart.
+
+## Running as a Background Service (Linux)
+
+To keep Nexus Core running after you close the terminal, use `nohup` or a systemd unit.
+
+<Tabs>
+  <Tab title="nohup">
+    ```bash
+    nohup java -jar target/nexus-core-4.0.jar > nexus.log 2>&1 &
+    echo $! > nexus.pid
+    ```
+
+    Stop with:
+
+    ```bash
+    kill $(cat nexus.pid)
+    ```
+  </Tab>
+  <Tab title="systemd">
+    Create `/etc/systemd/system/nexus-core.service`:
+
+    ```ini
+    [Unit]
+    Description=Nexus Core Cache Orchestrator
+    After=network.target
+    
+    [Service]
+    User=nexus
+    WorkingDirectory=/opt/nexus-core
+    ExecStart=/usr/bin/java -jar nexus-core-4.0.jar
+    Environment="NEXUS_SIGNING_KEY=your-secret-key"
+    Restart=on-failure
+    RestartSec=5
+    
+    [Install]
+    WantedBy=multi-user.target
+    ```
+
+    Enable and start:
+
+    ```bash
+    sudo systemctl daemon-reload
+    sudo systemctl enable nexus-core
+    sudo systemctl start nexus-core
+    sudo systemctl status nexus-core
+    ```
+  </Tab>
+</Tabs>
+
+## Troubleshooting
+
+<Accordion title="The web panel is not accessible on port 8080">
+  Check that no other process is using port 8080 (`lsof -i :8080`). If you need a different port, set `SERVER PORT` to a free port during first-time configuration, or update the persisted config file.
+</Accordion>
+
+<Accordion title="Redis or MongoDB connection fails at startup">
+  Verify the host, port, and credentials. For MongoDB, ensure the URI is a valid connection string (e.g. `mongodb://user:pass@host:27017/dbname`). For Redis, confirm `redis-server` is running and reachable from the Nexus Core host.
+</Accordion>
+
+<Accordion title="Packets are being rejected with a signature error">
+  The `NEXUS_SIGNING_KEY` on Nexus Core and the sending Spigot server must be identical. Set the same key on both sides. Also confirm that NTP is running and server clocks are within 5 minutes of each other.
+</Accordion>
+
+<Accordion title="Packets are rejected even with the correct key">
+  Timestamp drift is the most common cause. Nexus Core rejects packets older than 5 minutes. Run `ntpdate` or enable an NTP service (`timedatectl set-ntp true`) on all hosts.
+</Accordion>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Register your first DataAddon and send your first request.
+  </Card>
+
+  <Card title="Configuration" icon="gear" href="/configuration">
+    Full reference for all connection parameters and the signing key.
+  </Card>
+</CardGroup>

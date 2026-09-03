@@ -6,6 +6,8 @@ description: "Nexus Core is a standalone Java orchestration layer that centraliz
 
 Nexus Core is a standalone Java application that acts as a centralized data orchestration layer for distributed Minecraft server networks. Instead of every Spigot server maintaining its own MongoDB connection pool and managing its own cache, all data operations are delegated to Nexus Core through a Redis pub/sub messaging layer. Think of it as a microservice built specifically for Minecraft infrastructure: Nexus Core owns all data, while your Spigot servers act as thin clients.
 
+As of v1.5.1, all communication is **fully authenticated in both directions**: inbound packets from Spigot servers are verified, and outbound responses from Nexus Core are signed using the same `NEXUS_SIGNING_KEY`.
+
 ## Why Nexus Core?
 
 <CardGroup cols={3}>
@@ -34,27 +36,27 @@ Nexus Core is a standalone Java application that acts as a centralized data orch
   <Step title="Data is served from Redis or MongoDB">
     The addon checks the Redis L2 cache first. On a cache miss, it queries MongoDB and writes the result back to cache.
   </Step>
-  <Step title="Response is published back to the source server">
-    The result is serialized and published to the originating server's Redis channel.
+  <Step title="Signed response published back to the source server">
+    The result is serialized, signed with `NEXUS_SIGNING_KEY`, and published to the originating server's Redis channel.
   </Step>
 </Steps>
 
 ## Explore the Docs
 
 <CardGroup cols={2}>
-  <Card title="Quickstart" icon="rocket" href="/quickstart">
-    Build and run Nexus Core and register 
+  <Card title="Installation" icon="rocket" href="/installation">
+    Build Nexus Core from source and launch the web panel.
+  </Card>
+
+  <Card title="Quickstart" icon="bolt" href="/quickstart">
+    Register your first DataAddon and send a signed request in minutes.
   </Card>
 
   <Card title="System Architecture" icon="diagram-project" href="/concepts/architecture">
     Understand the hub-and-spoke design connecting Spigot servers, Redis, and MongoDB.
   </Card>
 
-  <Card title="Building Addons" icon="puzzle-piece" href="/addons/overview">
-    Learn how to define data schemas, implement request gating, and register addons.
-  </Card>
-
-  <Card title="Packet Structure" icon="file-code" href="/reference/packet-structure">
-    Reference for the JSON packet format and all security fields exchanged over Redis.
+  <Card title="Security" icon="shield-halved" href="/concepts/security">
+    Full symmetric HMAC signing on inbound and outbound packets as of v1.5.1.
   </Card>
 </CardGroup>

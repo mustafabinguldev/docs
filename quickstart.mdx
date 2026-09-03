@@ -1,48 +1,148 @@
 ---
 title: "Get Started with Nexus Core"
-description: "Learn how to build, run, and register your first DataAddon with Nexus Core in under 10 minutes using Java 21 and Maven."
 sidebarTitle: "Quickstart"
+description: "Learn how to register your first DataAddon with Nexus Core v1.5.1, send a signed request, and receive a signed response in under 10 minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+This guide assumes Nexus Core is already installed and running. If not, follow the [Installation](/installation) guide first. By the end of this page, you will have a working DataAddon registered and a signed packet flowing from a Spigot server through Redis to MongoDB and back.
 
 ## Prerequisites
 
-Before you begin, you must have:
+- Nexus Core v1.5.1 running with the web panel accessible at `http://localhost:8080`
+- `NEXUS_SIGNING_KEY` set to the same value on Nexus Core and your Spigot server
+- Redis and MongoDB connected (verified in the web panel)
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+## Steps
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Create a DataAddon class">
+    Create a class that extends `DataAddon`, implement the required methods, and annotate your document fields with `@DbDataModels`. The addon below stores player statistics in a `player_stats` MongoDB collection.
 
-    ```bash
-    npm install your-package
+    ```java
+    package network.darkland.addons;
+    
+    import network.darkland.protocol.DataAddon;
+    import network.darkland.protocol.NexusJsonDataContainer;
+    import network.darkland.protocol.backup.annotations.DbDataModels;
+    
+    public class PlayerStatsAddon extends DataAddon {
+    
+        @Override
+        public int addonId() {
+            return 100; // Must be globally unique across all addons
+        }
+    
+        @Override
+        public String addonName() {
+            return "Player Stats";
+        }
+    
+        @Override
+        public String getDatabase() {
+            return "nexus_core_db";
+        }
+    
+        @Override
+        public String getCollection() {
+            return "player_stats";
+        }
+    
+        @Override
+        public String cacheKeyHeaderTag() {
+            return "stats"; // Redis key: "stats_<uuid>"
+        }
+    
+        @DbDataModels(isId = true)
+        private String uuid;
+    
+        @DbDataModels(defaultValue = "0", isId = false)
+        private int kills;
+    
+        @DbDataModels(defaultValue = "0", isId = false)
+        private int deaths;
+    
+        @DbDataModels(defaultValue = "0.0", isId = false)
+        private double balance;
+    
+        @DbDataModels(defaultValue = "false", isId = false)
+        private boolean isPremium;
+    
+        @Override
+        public boolean handleRequest(String source, RequestType requestType,
+                                     NexusJsonDataContainer data) {
+            // Only allow deletes from the admin server
+            if (requestType == RequestType.REMOVE_DATA) {
+                return source.equals("admin");
+            }
+            return true;
+        }
+    }
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+  <Step title="Register the addon on startup">
+    Register the addon with the protocol handler during your application startup:
 
-    ```bash
-    your-cli init
+    ```java
+    NexusApplication.getInstance()
+        .getProtocolHandler()
+        .registerAddon(new PlayerStatsAddon());
     ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
 
-    ```bash
-    your-cli start
+    Nexus Core now routes all requests for protocol ID `100` to the `player_stats` collection automatically.
+  </Step>
+  <Step title="Send a signed request from your Spigot server">
+    On the Spigot side, construct a signed JSON packet and publish it to the Nexus Redis channel. As of v1.5.1, Nexus Core also signs its outgoing responses, so your client must be ready to verify the `sig`, `timestamp`, and `nonce` fields on the response.
+
+    Example `GET_DATA` request:
+
+    ```json
+    {
+      "protocol": 100,
+      "source": "pvp-1",
+      "type": "GET_DATA",
+      "data": {
+        "uuid": "550e8400-e29b-41d4-a716-446655440000"
+      },
+      "timestamp": 1756900000000,
+      "nonce": "b7f2b1b0-4b3b-4e29-9e2b-6b8f2b1b0b7f",
+      "sig": "<base64-hmac-sha256>"
+    }
+    ```
+
+    Build the `sig` field by computing `HmacSHA256(NEXUS_SIGNING_KEY, allFieldsExceptSig)` and encoding the result as Base64.
+  </Step>
+  <Step title="Receive and verify the signed response">
+    Nexus Core publishes the response to your server's Redis channel. Since v1.5.1, responses also include `timestamp`, `nonce`, and `sig` fields. Verify the signature before trusting the data:
+
+    ```json
+    {
+      "protocol": 100,
+      "source": "nexus",
+      "type": "BROADCAST",
+      "target": "pvp-1",
+      "data": {
+        "uuid": "550e8400-e29b-41d4-a716-446655440000",
+        "kills": 142,
+        "deaths": 38,
+        "balance": 2500.75,
+        "isPremium": true
+      },
+      "timestamp": 1756900000123,
+      "nonce": "a1b2c3d4-...",
+      "sig": "<base64-hmac-sha256>"
+    }
     ```
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Next Steps
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Building Addons" icon="puzzle-piece" href="/addons/overview">
+    Learn how to define schemas, gate requests, and build production-ready addons.
+  </Card>
+
+  <Card title="Security" icon="shield-halved" href="/concepts/security">
+    Understand symmetric HMAC signing on both inbound and outbound messages.
+  </Card>
+</CardGroup>

@@ -1,24 +1,34 @@
 ---
 title: "Configuring Nexus Core"
 sidebarTitle: "Configuration"
-description: "Set up Redis, MongoDB, and packet security for Nexus Core using the startup dashboard and the NEXUS_SIGNING_KEY environment variable."
+description: "Set up Redis, MongoDB, and packet security for Nexus Core v1.5.1 using the web panel and the NEXUS_SIGNING_KEY environment variable."
 ---
 
-Nexus Core intentionally has no required config file. All connection parameters are entered through the Swing-based startup dashboard and validated live during bootstrapping. Since v1.4.0, these parameters can be persisted to disk so subsequent startups load them automatically.
+Starting from v1.5, Nexus Core runs a Spring Boot web panel instead of the legacy Swing dashboard. All connection parameters are entered through the web UI and validated live during bootstrapping. Since v1.4.0, these parameters are persisted to a local config file, so you only need to enter them once.
+
+## Accessing the Web Panel
+
+After launching Nexus Core, open your browser and navigate to:
+
+```text
+http://localhost:8080
+```
+
+Enter the connection details below and click **INITIALIZE NEXUS ENGINE**.
 
 ## Connection Parameters
-
-Enter these fields in the dashboard and click **INITIALIZE NEXUS ENGINE**:
 
 | Field | Default | Notes |
 | --- | --- | --- |
 | `REDIS HOST` | `127.0.0.1` | Host or IP of your Redis server. Port defaults to 6379. |
 | `MONGO URI` | `mongodb://localhost:27017` | Full MongoDB connection string. Supports authentication and replica sets. |
-| `SERVER PORT` | `8080` | Port used by Nexus Core for internal HTTP health checks. |
+| `SERVER PORT` | `8080` | Port the web panel and HTTP health check endpoint listen on. |
 
 ## Security Key
 
-The `NEXUS_SIGNING_KEY` environment variable enables HMAC-SHA256 packet signing. Set it before launching the process:
+The `NEXUS_SIGNING_KEY` environment variable controls HMAC-SHA256 message authentication. Since v1.5.1, signing is fully symmetric: Nexus Core verifies signatures on **inbound** packets and also signs all **outbound** responses (including DataAddon publish operations and heartbeat messages).
+
+Set the key before launching the process:
 
 ```bash
 export NEXUS_SIGNING_KEY="a-long-and-unpredictable-secret-key"
@@ -26,21 +36,29 @@ java -jar target/nexus-core-4.0.jar
 ```
 
 <Warning>
-  Never commit this key to version control. Deploy it through a secrets manager or a CI/CD environment variable and rotate it regularly.
+  The same `NEXUS_SIGNING_KEY` value must be configured on every Spigot server that communicates with Nexus Core, and on Nexus Core itself. Never commit it to version control. Use a secrets manager or CI/CD environment variable and rotate it regularly.
 </Warning>
 
 <Note>
-  If `NEXUS_SIGNING_KEY` is not set, signature verification is disabled and a one-time warning is logged. This is acceptable only during local development. Always configure the key before deploying to a production network.
+  If `NEXUS_SIGNING_KEY` is not set, both inbound verification and outbound signing are disabled. A one-time warning is logged at startup. This is acceptable only in local development environments.
 </Note>
+
+## What Gets Signed (v1.5.1)
+
+| Direction | Signed? | Fields added |
+| --- | --- | --- |
+| Spigot → Nexus (inbound) | Yes | `sig`, `timestamp`, `nonce` sent by client |
+| Nexus → Spigot (outbound) | Yes (new in v1.5.1) | `sig`, `timestamp`, `nonce` added by `MessageAuth` |
 
 ## Production Checklist
 
-- Set `NEXUS_SIGNING_KEY` to a strong, unique value on every node (Nexus Core and all Spigot servers must share the same key).
-- Keep all server clocks synchronized with NTP. Timestamp validation uses a 5-minute window, so clock drift beyond that causes valid packets to be rejected.
+- Set `NEXUS_SIGNING_KEY` on every node (Nexus Core and all Spigot servers) before deployment.
+- Keep all server clocks synchronized with NTP. Timestamp validation uses a 5-minute window; drift beyond that causes valid packets to be rejected.
 - Use a MongoDB URI with authentication in production (e.g. `mongodb://user:pass@host:27017/nexus_core_db`).
-- Run Redis with a password and bind it to a private network interface — do not expose it to the public internet.
+- Bind Redis to a private network interface and enable password authentication. Do not expose it to the public internet.
 
 ## Related Topics
 
+- [Installation](/installation) — building and running Nexus Core from source
 - [Security](/concepts/security) — how HMAC signing, timestamp validation, and nonce protection work together
-- [Quickstart](/quickstart) — step-by-step first-time setup
+- [Quickstart](/quickstart) — registering your first DataAddon
