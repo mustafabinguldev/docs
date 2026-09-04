@@ -6,7 +6,7 @@ description: "Nexus Core is a standalone Java orchestration layer that centraliz
 
 Nexus Core is a standalone Java application that acts as a centralized data orchestration layer for distributed Minecraft server networks. Instead of every Spigot server maintaining its own MongoDB connection pool and managing its own cache, all data operations are delegated to Nexus Core through a Redis pub/sub messaging layer. Think of it as a microservice built specifically for Minecraft infrastructure: Nexus Core owns all data, while your Spigot servers act as thin clients.
 
-As of v1.5.1, all communication is **fully authenticated in both directions**: inbound packets from Spigot servers are verified, and outbound responses from Nexus Core are signed using the same `NEXUS_SIGNING_KEY`.
+As of v1.5.5, all communication is **fully authenticated in both directions**: inbound packets from Spigot servers are verified, and outbound responses from Nexus Core are signed using the same `NEXUS_SIGNING_KEY`.
 
 ## Why Nexus Core?
 

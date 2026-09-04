@@ -1,10 +1,32 @@
 ---
 title: "Nexus Core Changelog"
 sidebarTitle: "Changelog"
-description: "Complete version history for Nexus Core, from the first stable release (v1.0.0) through the latest maintenance release (v1.5.1), newest first."
+description: "Complete version history for Nexus Core, from the first stable release (v1.0.0) through the latest release (v1.5.5), newest first."
 ---
 
 This page lists every Nexus Core release, newest first. Breaking behavior changes and security patches are highlighted.
+
+## v1.5.5 — Security and Compatibility (Sep 4, 2026)
+
+This release improves the determinism and security of the core messaging pipeline and is recommended for all users relying on Nexus Core's security infrastructure.
+
+**Security improvements:**
+
+- Added **nonce and timestamp** validation for improved replay attack protection across the message pipeline.
+- Updated the encryption pipeline to use an **ordered algorithm flow**, ensuring deterministic processing of security operations.
+- Introduced **chained key rotation**: a more structured and secure mechanism for transitioning signing keys without downtime.
+- Improved consistency and determinism across all security-related operations.
+
+**Compatibility and core improvements:**
+
+- Migrated relevant `Map` implementations to **`TreeMap`** where deterministic field ordering is required (affects HMAC signature computation over packet contents).
+- Improved data consistency between Nexus Core components.
+- Refactored several core operations for better compatibility and reliability.
+- Improved interoperability with existing Nexus integrations.
+
+<Note>
+  Upgrading to v1.5.5 is recommended for all deployments that rely on Nexus Core's security and messaging infrastructure. No public API changes; existing DataAddon subclasses require no modifications.
+</Note>
 
 ## v1.5.1 — Security Maintenance Release (Sep 3, 2026)
 
