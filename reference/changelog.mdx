@@ -12,7 +12,7 @@ This release replaces legacy internal Redis worker threads with dedicated virtua
 
 **What changed:**
 
-- Replaced legacy internal Redis worker threads with **dedicated virtual thread executors** (`Executors.newVirtualThreadPerTaskExecutor()`).
+- Replaced gacy internal Redis worker threads with **dedicated virtual thread executors** (`Executors.newVirtualThreadPerTaskExecutor()`).
 - Added **separate outbound and MongoDB executors** in `RedisManager` to isolate task types and prevent contention.
 - Updated `MongoManager` to accept and use the **shared MongoDB executor** passed from `RedisManager`, ensuring all async database operations run through a single, consistent executor pool.
 - Migrated all `MongoManager` `supplyAsync` and `runAsync` calls to execute through the dedicated executor.
