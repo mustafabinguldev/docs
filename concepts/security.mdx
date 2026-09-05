@@ -1,86 +1,142 @@
 ---
 title: "Packet Security and Replay Protection in Nexus Core"
 sidebarTitle: "Security"
-description: "Nexus Core v1.5.1 signs both inbound and outbound Redis packets using HMAC-SHA256, a 5-minute timestamp window, and nonce-based replay protection."
+description: "Nexus Core signs both inbound and outbound Redis packets using HMAC-SHA256, a 5-minute timestamp window, and nonce-based replay protection via a composable MessageValidationChain."
 ---
 
-As of v1.5.1, Nexus Core implements **symmetric message authentication**: every packet Nexus Core receives is validated, and every packet it sends is signed using the same `NEXUS_SIGNING_KEY`. This closes the attack surface in both directions — forged requests from Spigot servers are rejected, and forged responses injected into Redis are equally detectable by the client.
+Nexus Core implements **symmetric message authentication**: every packet received is validated, and every packet sent is signed using the same `NEXUS_SIGNING_KEY`. As of v1.6.1, the validation logic is structured as a composable `MessageValidationChain` that is shared globally for inbound messages and also available per-addon for custom rules.
 
-## How It Works: Three-Stage Validation
+## How It Works: MessageValidationChain
 
-Every inbound packet passes through three stages in order. A failure at any stage silently drops the packet and logs a warning. No response is sent on failure.
+Inbound validation is handled by `MessageValidationChain`, a pipeline of `MessageValidator` instances. Each validator receives the parsed `NexusJsonDataContainer` and returns a `ValidationResult` indicating success or a rejection reason. Processing stops immediately if any validator rejects the message.
 
-### Stage 1: HMAC-SHA256 Signature Verification
+`NexusReceiver` builds a **global chain** applied to every inbound packet:
 
-Every packet includes a `sig` field containing a Base64-encoded HMAC-SHA256 signature computed over all other fields in the packet (excluding `sig` itself), using the shared `NEXUS_SIGNING_KEY`.
+```java
+new MessageValidationChain(List.of(
+    new SignatureValidator(),
+    new TimestampValidator(),
+    new NonceValidator()
+))
+```
 
-When a packet arrives, Nexus Core:
+Starting from v1.6.1, each `DataAddon` can also define an **additional per-addon chain** via `additionalValidators()`. This chain runs after the global chain passes, before any request handler executes.
+
+### MessageValidator Interface
+
+```java
+@FunctionalInterface
+public interface MessageValidator {
+    ValidationResult validate(NexusJsonDataContainer message);
+}
+```
+
+`ValidationResult` is a record with two fields: `valid` (boolean) and `reason` (String). Use the static factories:
+
+```java
+ValidationResult.ok()              // passes
+ValidationResult.reject("reason")  // fails and logs the reason
+```
+
+## Global Validation: Three Stages
+
+Every inbound packet passes through these three validators in order. A failure at any stage silently drops the packet and logs a warning. No response is sent.
+
+### Stage 1: HMAC-SHA256 Signature (`SignatureValidator`)
+
+Every packet includes a `sig` field: a Base64-encoded HMAC-SHA256 signature over all other fields in the packet (excluding `sig` itself), computed using the shared `NEXUS_SIGNING_KEY`.
+
+When a packet arrives, `SignatureValidator`:
 
 1. Reads all fields except `sig`.
-2. Recomputes the expected HMAC-SHA256 signature using `NEXUS_SIGNING_KEY`.
+2. Recomputes HMAC-SHA256 using `HmacSigner.sign(payloadWithoutSig, NEXUS_SIGNING_KEY)`.
 3. Compares the result against the received `sig`.
-4. Rejects the packet immediately if they do not match, and logs a warning.
+4. Rejects the packet if they do not match.
 
-### Stage 2: Timestamp Validation
+### Stage 2: Timestamp (`TimestampValidator`)
 
-Every packet must include a `timestamp` field (Unix milliseconds). Nexus Core calculates the absolute difference between the packet timestamp and the server clock. If the difference exceeds **5 minutes**, the packet is rejected.
-
-This prevents intercepted packets from being replayed long after they were captured.
+Every packet must include a `timestamp` field (Unix milliseconds). `TimestampValidator` calculates `|now - timestamp|`. If the difference exceeds **5 minutes** (`TIMESTAMP_WINDOW_MILLIS`), the packet is rejected.
 
 <Tip>
   Keep all server clocks synchronized with NTP. Clock drift beyond 5 minutes causes valid packets to be rejected even when the signature and nonce are correct.
 </Tip>
 
-### Stage 3: Nonce-Based Replay Protection
+### Stage 3: Nonce Replay Protection (`NonceValidator`)
 
-Every packet must include a unique `nonce` UUID string. Nexus Core records each nonce in a `ConcurrentHashMap` keyed by nonce value with the packet timestamp. A second packet with the same nonce is identified as a replay attack and rejected immediately.
+Every packet must include a unique `nonce` string. `NonceValidator` records each nonce in a `ConcurrentHashMap` keyed by nonce value with the packet timestamp. A second packet with the same nonce is rejected immediately as a replay attempt.
 
-Expired nonce entries are cleaned up automatically based on the timestamp window, keeping memory usage bounded.
+Expired nonce entries are purged automatically every `TIMESTAMP_WINDOW_MILLIS` by a background daemon thread, keeping memory usage bounded.
 
 ## Validation Order
 
 ```text
-1. sig       — Does it exist? Does HMAC verification pass?
-2. timestamp — Does it exist? Is it within the 5-minute window?
-3. nonce     — Does it exist? Has it not been seen before?
-4. type      — Is the RequestType valid?
-               └──► All checks passed: normal processing continues.
+1. sig       — Exists? HMAC verification passes?
+2. timestamp — Exists? Within 5-minute window?
+3. nonce     — Exists? Not seen before?
+               └──► Global chain passed. Per-addon chain runs next.
+4. addon.additionalValidators() — All pass?
+5. addon.handleRequest()        — Returns true?
+               └──► dispatch() runs the registered RequestHandler.
 ```
 
-## Outbound Signing (New in v1.5.1)
+## Per-Addon Validation (New in v1.6.1)
 
-Before v1.5.1, only inbound packets were verified. Starting from v1.5.1, the `MessageAuth` system signs every outgoing message from Nexus Core to Spigot servers, adding `timestamp`, `nonce`, and `sig` fields to all responses. This applies to:
+Override `additionalValidators()` in your `DataAddon` to enforce rules specific to your addon's data. The returned validators are assembled into an immutable `MessageValidationChain` once (lazily, thread-safely) and reused for every request that addon receives.
+
+```java
+@Override
+protected List<MessageValidator> additionalValidators() {
+    return List.of(
+        message -> message.containsKey("playerUuid")
+            ? ValidationResult.ok()
+            : ValidationResult.reject("playerUuid field is required"),
+
+        message -> {
+            String uuid = message.get("playerUuid", String.class);
+            return uuid != null && uuid.length() == 36
+                ? ValidationResult.ok()
+                : ValidationResult.reject("playerUuid must be a valid UUID string");
+        }
+    );
+}
+```
+
+## Outbound Signing
+
+Starting from v1.5.1, the `MessageAuth` system signs every outgoing message from Nexus Core, adding `timestamp`, `nonce`, and `sig` fields to all responses. This applies to:
 
 - All `DataAddon` publish operations (query responses, broadcasts)
 - `RedisDataContainer` heartbeat messages
 
-Your Spigot-side client should verify the `sig` on incoming responses using the same `NEXUS_SIGNING_KEY`. Clients that do not yet verify outbound signatures continue to work — backward compatibility is maintained.
+Spigot-side clients can verify the `sig` on incoming responses using the same `NEXUS_SIGNING_KEY`. Clients that do not yet verify outbound signatures continue to work — backward compatibility is maintained.
 
 ## Configuring the Signing Key
 
-Set the environment variable before launching Nexus Core and on every Spigot server:
+Set the environment variable before launching Nexus Core and on every Spigot server in the network:
 
 ```bash
 export NEXUS_SIGNING_KEY="a-long-and-unpredictable-secret-key"
 ```
 
 <Warning>
-  `NEXUS_SIGNING_KEY` must be identical across all Spigot servers and the Nexus Core process. Never commit it to version control. Deploy it through a secrets manager or CI/CD environment variable and rotate it if it is ever exposed.
+  `NEXUS_SIGNING_KEY` must be identical on Nexus Core and every connected Spigot server. Never commit it to version control. Rotate it immediately if it is exposed.
 </Warning>
 
 <Note>
-  If `NEXUS_SIGNING_KEY` is not defined, both inbound verification and outbound signing are disabled. A one-time warning is logged. This behavior is acceptable only in local development environments.
+  If `NEXUS_SIGNING_KEY` is not defined, both inbound verification and outbound signing are disabled. A one-time warning is logged. This is acceptable only for local development.
 </Note>
 
 ## Security Coverage Summary
 
-| Direction | Since | Covers |
+| Direction | Since | Mechanism |
 | --- | --- | --- |
-| Spigot → Nexus (inbound) | v1.5 | Signature, timestamp, nonce |
-| Nexus → Spigot (outbound) | v1.5.1 | Signature, timestamp, nonce via `MessageAuth` |
+| Spigot → Nexus (inbound, global) | v1.5 | `MessageValidationChain`: `SignatureValidator`, `TimestampValidator`, `NonceValidator` |
+| Spigot → Nexus (inbound, per-addon) | v1.6.1 | `DataAddon.additionalValidators()` |
+| Nexus → Spigot (outbound) | v1.5.1 | `MessageAuth` with HMAC-SHA256, timestamp, nonce |
 
 ## Related Topics
 
-- [Configuration](/configuration) — how to set `NEXUS_SIGNING_KEY` and production checklist
-- [Packet Structure](/reference/packet-structure) — the `sig`, `timestamp`, and `nonce` field formats for both directions
+- [Configuration](/configuration) — how to set `NEXUS_SIGNING_KEY` and the production checklist
+- [Packet Structure](/reference/packet-structure) — `sig`, `timestamp`, and `nonce` field formats for both directions
+- [Data Addon API](/addons/data-addon-api) — `additionalValidators()`, `registerHandler()`, and the full `DataAddon` method reference
 - [Request Lifecycle](/reference/request-lifecycle) — where the security chain fits in the full request flow

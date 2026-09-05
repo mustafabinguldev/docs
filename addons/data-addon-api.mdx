@@ -1,12 +1,12 @@
 ---
 title: "DataAddon API Reference"
 sidebarTitle: "DataAddon API"
-description: "Full reference for the DataAddon abstract class: the five required methods, handleRequest lifecycle, and the NexusJsonDataContainer payload type."
+description: "Full reference for the DataAddon abstract class: all required methods, the handler registry, per-addon validation, and the NexusJsonDataContainer payload type."
 ---
 
-The `DataAddon` abstract class is the contract every addon must implement. It declares six abstract methods that tell Nexus Core how to identify the addon, where to persist data, how to key the cache, and whether to process a given request. All methods are called by the framework; you never invoke them directly.
+The `DataAddon` abstract class is the contract every addon must implement. It declares the required methods that tell Nexus Core how to identify the addon, where to persist data, how to key the cache, and whether to process a given request. All methods are called by the framework; you never invoke them directly from your addon.
 
-## Abstract Methods
+## Required Abstract Methods
 
 ### `addonId()`
 
@@ -52,6 +52,14 @@ public abstract String cacheKeyHeaderTag();
 
 Returns the prefix used when constructing Redis cache keys. The full key format is `{tag}_{idFieldValue}`. Use a distinctive, addon-specific prefix to prevent key collisions with other addons.
 
+### `getCacheTTL()`
+
+```java
+public abstract int getCacheTTL();
+```
+
+Returns the time-to-live in seconds for Redis cache entries written by this addon. The value is passed as the `EX` parameter on every Redis `SET` call. Choosing an appropriate TTL per addon prevents stale data and controls Redis memory consumption.
+
 ### `handleRequest()`
 
 ```java
@@ -62,55 +70,109 @@ public abstract boolean handleRequest(
 );
 ```
 
-Called before every data operation, after the security validation chain. Use it to gate requests based on the originating server or the request type.
+Called as a **gate** before any request handler runs. Return `true` to allow dispatch to the registered `RequestHandler`; return `false` to stop processing and discard the request silently.
 
 - `source` — the ID of the Spigot server that sent the packet (e.g. `"pvp-1"`)
 - `requestType` — the operation being requested (`GET_DATA`, `SET_DATA`, `REMOVE_DATA`, etc.)
 - `data` — the payload container from the incoming packet
 
-Returning `true` allows processing to continue. Returning `false` rejects the request and sends an empty response to the source server.
-
 <Note>
-  `handleRequest()` runs synchronously on the inbound processing thread, before any Redis or MongoDB I/O. Keep it fast: perform only lightweight validation and never call external APIs, sleep, or perform database queries inside it.
+  `handleRequest()` runs synchronously on the inbound processing thread. Keep it fast: perform only lightweight validation. Never call external APIs, sleep, or query a database inside it.
 </Note>
 
-## handleRequest Example
+## Handler Registry (New in v1.6.2)
+
+As of v1.6.2, each request type is handled by a registered `RequestHandler` instead of a monolithic method body. Nexus Core calls `addon.dispatch(source, type, data)` after `handleRequest()` returns `true`, routing to the correct handler automatically.
+
+### Default Handlers
+
+`DataAddon` registers the following handlers in its constructor via `registerDefaultHandlers()`:
+
+| RequestType | Default Handler |
+| --- | --- |
+| `GET_DATA` | `GetDataHandler` |
+| `SET_DATA` | `SetDataHandler` |
+| `REMOVE_DATA` | `RemoveDataHandler` |
+| `INCREMENT_DATA` | `IncrementDataHandler` |
+| `RANKING` | `RankingHandler` |
+| `RANK_FINDER` | `RankFinderHandler` |
+
+### `registerHandler()`
 
 ```java
-@Override
-public boolean handleRequest(String source, RequestType requestType,
-                             NexusJsonDataContainer data) {
-    // Only allow delete operations from the "admin" server
-    if (requestType == RequestType.REMOVE_DATA) {
-        return source.equals("admin");
-    }
-    return true;
+protected final void registerHandler(RequestType type, RequestHandler handler);
+```
+
+Registers or replaces a handler for the given request type. Call this in your subclass constructor (after `super()`) to override a default handler or add support for a new request type.
+
+`RequestHandler` is a functional interface:
+
+```java
+@FunctionalInterface
+public interface RequestHandler {
+    void handle(DataAddon addon, String source, NexusJsonDataContainer json);
 }
 ```
 
+**Example — override the default SET_DATA handler:**
+
+```java
+public class PlayerStatsAddon extends DataAddon {
+
+    public PlayerStatsAddon() {
+        super(); // registers default handlers
+        registerHandler(RequestType.SET_DATA, (addon, source, json) -> {
+            // Custom write logic — e.g. sanitize or transform the payload first
+            json.remove("internalField");
+            new SetDataHandler().handle(addon, source, json);
+        });
+    }
+
+    // ... abstract methods
+}
+```
+
+### `supportedRequestTypes()`
+
+```java
+public final Set<RequestType> supportedRequestTypes();
+```
+
+Returns the unmodifiable set of `RequestType` values for which a handler is currently registered.
+
+## Per-Addon Validation (New in v1.6.1)
+
+Override `additionalValidators()` to enforce custom message rules for your addon. The validators run after the global security chain (signature, timestamp, nonce) passes, and before `handleRequest()` is called.
+
+```java
+@Override
+protected List<MessageValidator> additionalValidators() {
+    return List.of(
+        message -> message.containsKey("playerUuid")
+            ? ValidationResult.ok()
+            : ValidationResult.reject("playerUuid field is required")
+    );
+}
+```
+
+The chain is assembled once (lazily, thread-safely) via `getAdditionalValidationChain()` and reused for every subsequent request. See [Security](/concepts/security) for the full `MessageValidator` interface and `ValidationResult` API.
+
 ## NexusJsonDataContainer
 
-`NexusJsonDataContainer` is the payload wrapper passed to `handleRequest()` and used internally during request processing. It holds the fields from the incoming packet's `data` object as a map. Use it to inspect or validate field values before allowing the request to proceed.
+`NexusJsonDataContainer` is the payload wrapper used throughout the request pipeline. It holds the fields from the incoming packet's `data` object as a typed key-value map. Key methods:
+
+| Method | Description |
+| --- | --- |
+| `get(key, Class<T>)` | Read a field, casting to the given type |
+| `set(key, value)` | Write a field |
+| `remove(key)` | Remove a field (e.g. before signing or publishing) |
+| `containsKey(key)` | Check field presence |
+| `toFullJson()` | Serialize to a JSON string |
 
 ## Complete Example
 
 ```java
 public class PlayerStatsAddon extends DataAddon {
-
-    @Override
-    public int addonId()            { return 100; }
-
-    @Override
-    public String addonName()       { return "Player Stats"; }
-
-    @Override
-    public String getDatabase()     { return "nexus_core_db"; }
-
-    @Override
-    public String getCollection()   { return "player_stats"; }
-
-    @Override
-    public String cacheKeyHeaderTag() { return "stats"; }
 
     @DbDataModels(isId = true)
     private String uuid;
@@ -118,11 +180,31 @@ public class PlayerStatsAddon extends DataAddon {
     @DbDataModels(defaultValue = "0", isId = false)
     private int kills;
 
+    @DbDataModels(defaultValue = "0", isId = false)
+    private int deaths;
+
+    @Override public int    addonId()            { return 100; }
+    @Override public String addonName()          { return "Player Stats"; }
+    @Override public String getDatabase()        { return "nexus_core_db"; }
+    @Override public String getCollection()      { return "player_stats"; }
+    @Override public String cacheKeyHeaderTag()  { return "stats"; }
+    @Override public int    getCacheTTL()        { return 1800; } // 30 minutes
+
     @Override
-    public boolean handleRequest(String source, RequestType requestType,
+    protected List<MessageValidator> additionalValidators() {
+        return List.of(
+            msg -> msg.containsKey("uuid")
+                ? ValidationResult.ok()
+                : ValidationResult.reject("uuid field is required")
+        );
+    }
+
+    @Override
+    public boolean handleRequest(String source, RequestType type,
                                  NexusJsonDataContainer data) {
-        if (requestType == RequestType.REMOVE_DATA) {
-            return source.equals("admin");
+        // Only allow removals from the admin server
+        if (type == RequestType.REMOVE_DATA) {
+            return "admin".equals(source);
         }
         return true;
     }
@@ -132,5 +214,6 @@ public class PlayerStatsAddon extends DataAddon {
 ## Related Topics
 
 - [Annotations Reference](/addons/annotations) — the `@DbDataModels` syntax and supported types
-- [Best Practices](/addons/best-practices) — ID constants, UUID keys, fast handleRequest, and more
-- [Request Types](/concepts/request-types) — all nine `RequestType` values and their semantics
+- [Security](/concepts/security) — `MessageValidationChain`, `MessageValidator`, and per-addon validation
+- [Best Practices](/addons/best-practices) — ID constants, UUID keys, fast `handleRequest`, and more
+- [Request Types](/concepts/request-types) — all `RequestType` values and their semantics

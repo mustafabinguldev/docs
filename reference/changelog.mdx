@@ -1,10 +1,97 @@
 ---
 title: "Nexus Core Changelog"
 sidebarTitle: "Changelog"
-description: "Complete version history for Nexus Core, from the first stable release (v1.0.0) through the latest release (v1.5.5), newest first."
+description: "Complete version history for Nexus Core, from the first stable release (v1.0.0) through the latest release (v1.6.3), newest first."
 ---
 
 This page lists every Nexus Core release, newest first. Breaking behavior changes and security patches are highlighted.
+
+## v1.6.3 — Virtual Thread Executors (Sep 5, 2026)
+
+This release replaces legacy internal Redis worker threads with dedicated virtual thread executors, improving task isolation and scalability.
+
+**What changed:**
+
+- Replaced legacy internal Redis worker threads with **dedicated virtual thread executors** (`Executors.newVirtualThreadPerTaskExecutor()`).
+- Added **separate outbound and MongoDB executors** in `RedisManager` to isolate task types and prevent contention.
+- Updated `MongoManager` to accept and use the **shared MongoDB executor** passed from `RedisManager`, ensuring all async database operations run through a single, consistent executor pool.
+- Migrated all `MongoManager` `supplyAsync` and `runAsync` calls to execute through the dedicated executor.
+- Updated application initialization (`NexusApplication`) to pass the MongoDB executor from `RedisManager` to `MongoManager`.
+
+**Why this matters:**
+
+Virtual threads (Project Loom) are low-cost and managed by the JVM scheduler, so Nexus Core no longer needs to manage platform thread pools manually for outbound and database tasks. Separating the Redis outbound executor from the MongoDB executor prevents a burst of database queries from starving Redis publishes, and vice versa.
+
+<Note>
+  No breaking changes. Existing DataAddon subclasses require no modifications.
+</Note>
+
+## v1.6.2 — Handler Registry and Request Dispatch (Sep 5, 2026)
+
+This release refactors request handling inside `DataAddon` from a monolithic dispatch model to a **pluggable handler registry**.
+
+**What changed:**
+
+- Introduced the `RequestHandler` functional interface (`void handle(DataAddon, String source, NexusJsonDataContainer)`). Each request type is now handled by a dedicated, registered handler object instead of a single overloaded method body.
+- Added the `registerHandler(RequestType, RequestHandler)` method to `DataAddon`. Subclasses can override or add handlers for specific request types at construction time.
+- `DataAddon` now calls `registerDefaultHandlers()` in its constructor, pre-registering built-in handler classes for `GET_DATA`, `SET_DATA`, `REMOVE_DATA`, `INCREMENT_DATA`, `RANKING`, and `RANK_FINDER`.
+- Added the `dispatch(String source, RequestType, NexusJsonDataContainer)` final method. `NexusReceiver` now calls `addon.dispatch(...)` after `addon.handleRequest(...)` returns `true`.
+- Extracted request logic into dedicated handler classes under `protocol/handlers/`: `GetDataHandler`, `SetDataHandler`, `RemoveDataHandler`, `IncrementDataHandler`, `RankingHandler`, `RankFinderHandler`.
+- Added `supportedRequestTypes()` on `DataAddon` returning the unmodifiable set of registered handler keys.
+
+**Migration notes:**
+
+`handleRequest()` continues to function as a **gate**: return `true` to allow dispatch, `false` to stop processing. The actual data handling now happens inside the registered `RequestHandler`. Override `registerDefaultHandlers()` or call `registerHandler(...)` in your subclass constructor to customise behaviour for a specific request type.
+
+## v1.6.1 — Per-Addon Validation Chains (Sep 5, 2026)
+
+This release gives each `DataAddon` its own additional validation chain, allowing addons to enforce custom message rules before any handler runs.
+
+**What changed:**
+
+- Added `additionalValidators()` to `DataAddon`. Override this method to return a list of `MessageValidator` instances specific to your addon. The default implementation returns an empty list.
+- Added `getAdditionalValidationChain()` on `DataAddon`. Returns a lazily-initialized, immutable `MessageValidationChain` built from the validators returned by `additionalValidators()`. The chain is initialized once via double-checked locking.
+- `NexusReceiver` now calls `addon.getAdditionalValidationChain().runAll(requestData)` immediately before `addon.handleRequest(...)`. A rejection from any validator in the chain stops processing for that message.
+
+**How to add per-addon validation:**
+
+```java
+@Override
+protected List<MessageValidator> additionalValidators() {
+    return List.of(
+        message -> message.containsKey("playerUuid")
+            ? ValidationResult.ok()
+            : ValidationResult.reject("playerUuid field is required")
+    );
+}
+```
+
+## v1.6.0 — Security and Dependency Upgrades (Sep 4, 2026)
+
+This release addresses high and critical CVEs and aligns the project with current Spring Security standards.
+
+**Vulnerability mitigations:**
+
+- Resolved Spring Security authorization bypass CVEs.
+- Applied Tomcat path traversal patches.
+- Addressed Jackson DoS and unsafe deserialization vulnerabilities.
+
+**Dependency upgrades:**
+
+| Dependency | Previous | New |
+| --- | --- | --- |
+| Spring Boot | 3.x | **4.1.1** |
+| Jackson Databind | previous | **2.22.2** |
+| MongoDB Driver | previous | **5.6.1** |
+
+**Security architecture:**
+
+- Refactored `SecurityConfig` to fully conform to modern Spring Security 6 standards.
+- Updated `DaoAuthenticationProvider` wiring and exposed `AuthenticationManager` as a proper Spring bean.
+
+<Warning>
+  Spring Boot 4.x is a major version upgrade. If you extend or customize `SecurityConfig` or any Spring MVC configuration, review the [Spring Boot 4.0 migration guide](https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-4.0-Migration-Guide) before upgrading. DataAddon subclasses are not affected.
+</Warning>
 
 ## v1.5.5 — Security and Compatibility (Sep 4, 2026)
 
