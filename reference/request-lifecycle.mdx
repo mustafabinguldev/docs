@@ -1,16 +1,16 @@
 ---
 title: "Request Lifecycle in Nexus Core"
 sidebarTitle: "Request Lifecycle"
-description: "Step-by-step walkthrough of how Nexus Core processes an incoming Redis packet from security validation through cache lookup to response publication."
+description: "Step-by-step walkthrough of how Nexus Core processes an incoming Redis Streams packet from security validation through circuit breaker protection to response publication."
 ---
 
-Every packet that enters Nexus Core travels through a deterministic sequence of steps before a response is sent. Understanding this lifecycle helps you reason about where failures occur, how caching decisions are made, and where your `handleRequest()` code fits in the flow.
+Every packet that enters Nexus Core travels through a deterministic sequence of steps before a response is sent. Understanding this lifecycle helps you reason about where failures occur, how caching decisions are made, and where your `handleRequest()` code fits in the flow. As of v1.6.4, inbound delivery is guaranteed by Redis Streams and all database calls are protected by circuit breakers and retry.
 
 ## Lifecycle Steps
 
 <Steps>
-  <Step title="Incoming Redis packet received">
-    Nexus Core's subscription listener receives the JSON packet from the Redis pub/sub channel.
+  <Step title="Incoming Redis Streams message received">
+    Nexus Core reads the next available JSON message from the Redis Stream using a consumer group (`XREADGROUP`). The message is persisted in the stream until Nexus Core explicitly acknowledges it with `XACK` after successful processing, guaranteeing at-least-once delivery.
   </Step>
   <Step title="Security chain validation">
     The packet passes through the three-stage security chain:
@@ -43,17 +43,26 @@ Every packet that enters Nexus Core travels through a deterministic sequence of 
     - **RANKING / RANK_FINDER**: Execute a sorted MongoDB query directly. Cache is bypassed.
     - **BROADCAST**: Publish the payload to the target server's Redis channel. No MongoDB operation.
   </Step>
-  <Step title="Serialize and publish response">
-    The result is serialized to JSON and published to the originating server's Redis channel. The response includes the protocol ID, the `"nexus"` source, and the response data.
+  <Step title="Circuit breaker and retry protection">
+    All MongoDB and Redis cache calls in the previous step are wrapped in Resilience4j Circuit Breakers. If a backend service exceeds its error threshold, the circuit trips to `OPEN` and calls fail fast rather than queuing indefinitely. Transient failures are retried automatically using an exponential backoff policy with jitter, which prevents retry storms during recovery.
+  </Step>
+  <Step title="Acknowledge and publish response">
+    After a successful operation, Nexus Core sends `XACK` to remove the message from the pending-entries list in the stream. The result is then serialized to JSON, signed with `MessageAuth` (if `NEXUS_SIGNING_KEY` is configured), and published to the originating server's response channel. The response includes the protocol ID, the `"nexus"` source, and the response data.
   </Step>
 </Steps>
 
 ## Full Flow Diagram
 
 ```text
-Incoming Redis Packet
+Spigot Server (XADD to Redis Stream)
         │
         ▼
+┌─────────────────────┐
+│  Redis Stream        │  Consumer group XREADGROUP
+│  (at-least-once)    │──► Nexus Core worker (virtual thread)
+└────────┬────────────┘
+         │
+         ▼
 ┌─────────────────────┐
 │  Security Chain      │      ┌──────────────┐
 │  sig → timestamp →  │─────►│  Failed?     │──► Log and drop
@@ -90,18 +99,32 @@ Incoming Redis Packet
     │                  INCREMENT / REMOVE
     ▼                        │
  Check Redis                 ▼
- cache                Write MongoDB +
-    │                  update/invalidate
-    ├── HIT ──► return       │
-    │   cache                ▼
-    └── MISS ──► Query   Serialize
-        MongoDB + fill   response
-        cache            │
-           │             │
-           └──────┬──────┘
+ cache            ┌─────────────────────┐
+    │             │  Circuit Breaker     │
+    ├── HIT ──►   │  + Retry (exp backoff│
+    │  return     │  + jitter)           │
+    │  cache      └────────┬────────────┘
+    └── MISS ──►           │
+    ┌──────────┐    Write MongoDB +
+    │ Circuit  │    update/invalidate
+    │ Breaker  │           │
+    │ + Retry  │           ▼
+    └────┬─────┘      Serialize response
+         │                 │
+         ▼                 │
+    Query MongoDB +        │
+    fill cache             │
+         │                 │
+         └────────┬────────┘
+                  │
                   ▼
-         Publish to source
-         Redis channel
+            XACK (stream)
+                  │
+                  ▼
+         Sign response (MessageAuth)
+                  │
+                  ▼
+         Publish to source channel
 ```
 
 ## Related Topics

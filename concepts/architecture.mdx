@@ -1,10 +1,10 @@
 ---
 title: "System Architecture of Nexus Core"
 sidebarTitle: "Architecture"
-description: "Understand how Nexus Core sits between your Spigot game servers and MongoDB, routing all data through a centralized Redis pub/sub messaging layer."
+description: "Understand how Nexus Core sits between your Spigot game servers and MongoDB, routing all data through Redis Streams with circuit breaker protection and fault-tolerant retry."
 ---
 
-Nexus Core is a standalone Java application that acts as the data brain for a distributed Minecraft server network. Multiple Spigot game servers (Lobby, PvP, Survival, and so on) publish request packets to a shared Redis channel. Nexus Core subscribes to that channel, validates each packet through a three-stage security chain, and routes it to the correct DataAddon. The addon reads from or writes to MongoDB, updates the Redis cache, and publishes the response back to the originating server.
+Nexus Core is a standalone Java application that acts as the data brain for a distributed Minecraft server network. Multiple Spigot game servers (Lobby, PvP, Survival, and so on) publish request packets to a shared **Redis Stream**. Nexus Core reads from that stream using consumer groups, validates each packet through a multi-stage security chain, and routes it to the correct DataAddon. The addon reads from or writes to MongoDB, updates the Redis cache, and publishes the response back to the originating server. As of v1.6.4, MongoDB and Redis calls are protected by **Resilience4j Circuit Breakers** and **Exponential Backoff Retry** to prevent cascading failures.
 
 ## Architecture Diagram
 
@@ -17,10 +17,10 @@ Nexus Core is a standalone Java application that acts as the data brain for a di
 │   └──────┬───────┘    └──────┬───────┘    └──────┬───────┘     │
 │          │                   │                   │             │
 │          └───────────────────┼───────────────────┘             │
-│                              │ Redis Pub/Sub (signed packets)  │
+│                              │ Redis Streams (signed packets)  │
 │                    ┌─────────▼──────────┐                      │
 │                    │    Redis Broker     │                      │
-│                    │   (Message Layer)   │                      │
+│                    │  (Streams + Cache)  │                      │
 │                    └─────────┬──────────┘                      │
 │                              │                                  │
 │                    ┌─────────▼──────────┐                      │
@@ -47,13 +47,15 @@ Nexus Core is a standalone Java application that acts as the data brain for a di
 
 ## Three Layers
 
-### Transport Layer (Redis pub/sub)
+### Transport Layer (Redis Streams)
 
-Redis provides the message bus that connects every Spigot node to Nexus Core. All requests, responses, and broadcasts share the same pub/sub fabric. Redis also serves as the shared L2 cache and publishes keyspace notifications that Nexus Core uses to keep L1 in-memory caches synchronized.
+As of v1.6.4, Redis Streams replace the legacy Pub/Sub channel. Spigot servers write packets with `XADD`; Nexus Core reads them via a consumer group using `XREADGROUP` and acknowledges each message with `XACK` after processing. This guarantees **at-least-once delivery**: unacknowledged messages are retained across reconnects, and consumer groups allow multiple worker instances to share the load.
+
+Redis also serves as the shared L2 cache and publishes keyspace notifications that Nexus Core uses to keep L1 in-memory caches synchronized.
 
 ### Nexus Core
 
-The security chain runs first on every inbound packet: HMAC-SHA256 signature verification, a 5-minute timestamp window, and nonce replay detection. After validation, the AddonRegistry dispatches the request to the matching DataAddon by protocol ID. The addon then consults the cache hierarchy and performs the required MongoDB operation.
+The security chain runs first on every inbound packet: HMAC-SHA256 signature verification, a 5-minute timestamp window, and nonce replay detection. After validation, the AddonRegistry dispatches the request to the matching DataAddon by protocol ID. The addon consults the cache hierarchy and performs the required MongoDB operation. All MongoDB and Redis calls are wrapped in **Resilience4j Circuit Breakers** that trip to `OPEN` on high error rates, and **Exponential Backoff Retry** with jitter automatically retries transient failures.
 
 ### Persistence Layer (MongoDB)
 

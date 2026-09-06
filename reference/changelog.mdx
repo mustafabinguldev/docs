@@ -1,10 +1,35 @@
 ---
 title: "Nexus Core Changelog"
 sidebarTitle: "Changelog"
-description: "Complete version history for Nexus Core, from the first stable release (v1.0.0) through the latest release (v1.6.3), newest first."
+description: "Complete version history for Nexus Core, from the first stable release (v1.0.0) through the latest release (v1.6.4), newest first."
 ---
 
 This page lists every Nexus Core release, newest first. Breaking behavior changes and security patches are highlighted.
+
+## v1.6.4 — Redis Streams Migration and Fault Tolerance (Sep 6, 2026)
+
+This release is a major reliability upgrade. The messaging pipeline migrates from Redis Pub/Sub to **Redis Streams**, and Resilience4j **Circuit Breakers** and **Exponential Backoff Retry** are added to protect against database and cache outages.
+
+**Redis Streams migration (at-least-once delivery):**
+
+- Replaced fire-and-forget Redis Pub/Sub with **Redis Streams** (`XADD`, `XREADGROUP`, `XACK`). Messages are now persisted in the stream until explicitly acknowledged, guaranteeing at-least-once delivery.
+- Added **consumer group** processing to enable distributed load balancing across multiple worker instances.
+- Unacknowledged messages are retained across reconnects, preventing data loss during node failovers or network interruptions.
+
+**Circuit Breaker integration (Resilience4j):**
+
+- Wrapped MongoDB and Redis calls in **Resilience4j Circuit Breakers** to isolate failing endpoints immediately instead of exhausting thread pools.
+- When a backend service error rate exceeds the threshold, the circuit trips to `OPEN` state, shedding unprocessable load and allowing downstream systems time to recover.
+
+**Exponential Backoff Retry:**
+
+- Failed database mutations and packet delivery attempts now automatically retry using an **exponential backoff policy**.
+- **Jitter** is added to retry intervals to prevent retry storms (thundering herd problem) during recovery phases.
+- Retry and circuit breaker logic is wired directly into the Java 21 virtual thread executors introduced in v1.6.3.
+
+<Warning>
+  **Breaking change:** Applications that connect directly to the `darkland_nexus` Redis Pub/Sub channel must update their configuration to use Redis Streams consumer groups. `DataAddon` subclasses and custom `RequestHandler` implementations require no code changes.
+</Warning>
 
 ## v1.6.3 — Virtual Thread Executors (Sep 5, 2026)
 
