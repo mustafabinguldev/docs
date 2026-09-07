@@ -1,10 +1,48 @@
 ---
 title: "Nexus Core Changelog"
 sidebarTitle: "Changelog"
-description: "Complete version history for Nexus Core, from the first stable release (v1.0.0) through the latest release (v1.6.4), newest first."
+description: "Complete version history for Nexus Core, from the first stable release (v1.0.0) through the latest release (v1.6.5), newest first."
 ---
 
 This page lists every Nexus Core release, newest first. Breaking behavior changes and security patches are highlighted.
+
+## v1.6.5 — Two-Tier L1/L2 Caching with Caffeine (Sep 7, 2026)
+
+This release upgrades the L1 in-memory cache from a raw `ConcurrentHashMap` to **Caffeine** with bounded capacity and per-entry TTL, adds a `l1CacheEnabled()` opt-out per addon, introduces the `L1InvalidationBus` for instant cross-instance cache invalidation, and ships a full cache metrics panel and key browser in the web dashboard.
+
+**L1 cache upgrade (Caffeine):**
+
+- Replaced `RedisDataContainer`'s raw `ConcurrentHashMap` L1 layer with **Caffeine** (`maximumSize=100,000`). Eviction uses the **W-TinyLFU** policy, which provides near-optimal hit rates under skewed access patterns.
+- Per-entry TTL is driven by each addon's `getCacheTTL()` value. Entries expire automatically without a background sweep thread.
+- Added dependency: `caffeine:3.1.8`.
+
+**`DataAddon#l1CacheEnabled()` (new opt-out method):**
+
+- Override and return `false` to bypass L1 entirely for an addon. Reads will always pass through to Redis (L2) first. Useful for large payloads or rarely-accessed data where memory trade-off is not worth it. Default is `true` (L1 enabled).
+
+**`L1InvalidationBus` (cluster-ready invalidation):**
+
+- Added a dedicated Redis Pub/Sub channel that broadcasts cache key invalidations the instant a `SET_DATA` or `REMOVE_DATA` operation completes. This replaces waiting on the existing 10-second L1 sync poll for invalidation events.
+- Gated behind the `NEXUS_CLUSTER_MODE` environment variable (default `false`). When Nexus Core runs as a single instance (the current default), the bus is disabled and there is zero overhead. Set `NEXUS_CLUSTER_MODE=true` when scaling Nexus Core horizontally.
+
+**`CacheMetrics`:**
+
+- Added per-addon counters for L1, L2, and L3 (MongoDB) hits and a hit-ratio snapshot.
+
+**Web dashboard additions:**
+
+- `GET /api/cache-metrics` — per-addon L1/L2/L3 hit counts and L1 hit ratio.
+- `GET /api/addons/{addonId}/keys` — paginated key listing using Redis `SCAN` (not `KEYS`, to avoid blocking Redis).
+- `GET /api/keys/value` — fetch a single key's raw value and the layer it was served from (L1 or L2).
+- `GET /api/stats` extended with `l1Hits`, `l2Hits`, `l3Hits`, `l1HitRatio`, and `clusterMode` fields.
+- New **L1 hit ratio** stat card with sparkline history.
+- New **Cache Performance** table showing per-addon L1/L2/L3 breakdown with a visual ratio bar.
+- New **Key Browser** panel: select an addon, page through its cached keys using SCAN cursor pagination, and expand a row to inspect its live JSON value and source layer.
+- Full TR/EN i18n coverage for all new UI strings.
+
+<Note>
+  No behavior change for existing addons. L1 stays enabled by default with the same TTL semantics as before. `DataAddon` subclasses require no code changes unless you want to opt out of L1 for a specific addon.
+</Note>
 
 ## v1.6.4 — Redis Streams Migration and Fault Tolerance (Sep 6, 2026)
 

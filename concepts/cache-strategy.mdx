@@ -1,23 +1,23 @@
 ---
 title: "Cache Strategy and Hierarchy in Nexus Core"
 sidebarTitle: "Cache Strategy"
-description: "Nexus Core uses a two-level cache (Redis L2 and in-memory L1) with write-through, read-through, and automatic invalidation to keep data consistent across all servers."
+description: "Nexus Core uses a two-level cache (Caffeine L1 with W-TinyLFU eviction and Redis L2) with write-through, read-through, instant invalidation, and per-addon cache metrics."
 ---
 
-Nexus Core caches data in two layers so your distributed Minecraft network stays fast and consistent. Redis acts as the shared L2 cache across all nodes, while each Nexus Core process keeps a local L1 in-memory cache for the hottest data. Requests are resolved in a strict priority order: Redis first, then local memory, then MongoDB.
+Nexus Core caches data in two layers so your distributed Minecraft network stays fast and consistent. Redis acts as the shared L2 cache across all nodes, while each Nexus Core process keeps a local **Caffeine** L1 in-memory cache for the hottest data. Requests are resolved in a strict priority order: L1 first, then Redis L2, then MongoDB.
 
 ## Cache Hierarchy
 
-The three-tier data path with Redis as the single source of truth:
-
 <Steps>
+  <Step title="L1: Caffeine in-memory cache (new in v1.6.5)">
+    Local to the Nexus Core process. Backed by **Caffeine** with a maximum capacity of 100,000 entries and **W-TinyLFU** eviction, which provides near-optimal hit rates under skewed access patterns. Each entry has a per-entry TTL driven by the addon's `getCacheTTL()` value. Entries expire automatically without a background sweep thread.
+
+    Any addon can opt out of L1 by overriding `l1CacheEnabled()` to return `false`. Reads for that addon will always pass through to L2.
+  </Step>
   <Step title="L2: Redis cache">
     Shared across every server in the network. Holds serialized documents with per-addon TTL. All Spigot servers indirectly see the same state because all writes flow through Nexus Core and land here first.
   </Step>
-  <Step title="L1: In-memory cache">
-    Local to the Nexus Core process. Stores deserialized objects for the fastest possible access. Automatically invalidated when the corresponding Redis key expires or is deleted.
-  </Step>
-  <Step title="MongoDB persistence">
+  <Step title="L3: MongoDB persistence">
     The durable backing store. Queried only when data is absent from both cache layers, and updated on every write-through operation.
   </Step>
 </Steps>
@@ -27,45 +27,74 @@ The three-tier data path with Redis as the single source of truth:
 | Request Type | Cache Behavior | Description |
 | --- | --- | --- |
 | `GET_DATA` | Read-through | Checks L1, then L2 Redis, then MongoDB. Missing data is backfilled into both cache layers. |
-| `SET_DATA` | Write-through | Written to MongoDB, then to Redis L2, then to L1. |
+| `SET_DATA` | Write-through | Written to MongoDB, then to Redis L2, then to L1. Triggers `L1InvalidationBus` broadcast if cluster mode is enabled. |
 | `UPDATE_DATA` | Write-through | Partial update applied to MongoDB, then synced to both cache layers. |
 | `INCREMENT_DATA` | Write-through | In-memory mutation result written back through L2 and L1. |
-| `REMOVE_DATA` | Invalidation | Deleted from MongoDB; both L2 and L1 entries are cleared. |
+| `REMOVE_DATA` | Invalidation | Deleted from MongoDB; both L2 and L1 entries are cleared. Triggers `L1InvalidationBus` broadcast if cluster mode is enabled. |
 | `LOAD_CACHE` | Warm | Document fetched from MongoDB and placed into L2 and L1 without a response payload. |
 
 ## Dynamic TTL
 
-Every DataAddon defines its own cache lifetime by overriding `getCacheTTL()`. The returned value controls how long documents stay in Redis before automatic expiration.
+Every DataAddon defines its own cache lifetime by overriding `getCacheTTL()`. The returned value (in seconds) controls how long documents stay in both the Caffeine L1 cache and Redis L2 before automatic expiration.
 
 ```java
 @Override
-public long getCacheTTL() {
-    return 300; // 5 minutes, in seconds
+public int getCacheTTL() {
+    return 300; // 5 minutes
 }
 ```
 
 Choose a short TTL for rapidly changing data (live player stats) and a longer TTL for data that changes rarely (player profiles, global configuration documents).
 
-## L1 and L2 Auto-sync
+## Opting Out of L1 Per Addon
 
-Nexus Core keeps L1 and L2 synchronized using Redis Keyspace Notifications. Enable them on your Redis instance with:
+Override `l1CacheEnabled()` on any `DataAddon` to bypass the Caffeine L1 layer for that addon entirely:
+
+```java
+@Override
+public boolean l1CacheEnabled() {
+    return false; // always read through to Redis L2
+}
+```
+
+Use this for large payloads or rarely-read data where holding a deserialized copy in memory is not worth the overhead.
+
+## L1 Invalidation Bus (Cluster Mode)
+
+In v1.6.5, `L1InvalidationBus` replaces the 10-second L1 sync poll for immediate invalidation: the moment a `SET_DATA` or `REMOVE_DATA` completes, a message is broadcast on a dedicated Redis Pub/Sub channel so all Nexus Core instances drop their L1 entry at once.
+
+The bus is **disabled by default** (zero overhead for single-instance deployments). Enable it when running Nexus Core horizontally:
+
+```bash
+export NEXUS_CLUSTER_MODE=true
+```
+
+## L2 Auto-sync (Keyspace Notifications)
+
+In addition to the invalidation bus, Nexus Core keeps L1 and L2 synchronized using Redis Keyspace Notifications:
 
 ```text
 notify-keyspace-events Ex
 ```
 
-When a Redis key expires or is deleted, Nexus Core receives the event and automatically invalidates the matching entry in the local L1 cache. This guarantees no Nexus Core process serves stale data after a TTL expiration or an explicit removal.
+When a Redis key expires naturally via TTL, Nexus Core receives the event and clears the matching L1 entry, preventing stale data after TTL expiration.
 
 ## Sliding TTL
 
 Nexus Core uses a touch-to-renew model: every time a document is read from Redis, its TTL is refreshed. Frequently accessed data stays in cache indefinitely, while cold data expires naturally and frees memory.
 
+## Cache Metrics
+
+As of v1.6.5, `CacheMetrics` tracks per-addon L1, L2, and L3 (MongoDB) hit counts and L1 hit ratio. These are exposed through the web dashboard and the `/api/cache-metrics` endpoint.
+
+The **Cache Performance** table in the dashboard shows a per-addon breakdown with a visual ratio bar, and the **Key Browser** panel lets you page through cached keys per addon and inspect their live values and source layer (L1 or L2).
+
 <Tip>
-  Use `LOAD_CACHE` at server startup to pre-warm frequently accessed documents such as player profiles or leaderboard data. This avoids cold-start latency on the first real requests.
+  Use `LOAD_CACHE` at server startup to pre-warm frequently accessed documents such as player profiles or leaderboard data. This avoids cold-start L3 (MongoDB) hits on the first real requests and immediately populates both L1 and L2.
 </Tip>
 
 ## Related Topics
 
 - [Request Types](/concepts/request-types) — which request types trigger which cache behavior
-- [DataAddon API](/addons/data-addon-api) — how to implement `getCacheTTL()` on your addon
+- [DataAddon API](/addons/data-addon-api) — `getCacheTTL()`, `l1CacheEnabled()`, and the full addon method reference
 - [Redis Key Strategy](/reference/redis-key-strategy) — how cache keys are constructed

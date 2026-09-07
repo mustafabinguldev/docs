@@ -58,7 +58,22 @@ Returns the prefix used when constructing Redis cache keys. The full key format 
 public abstract int getCacheTTL();
 ```
 
-Returns the time-to-live in seconds for Redis cache entries written by this addon. The value is passed as the `EX` parameter on every Redis `SET` call. Choosing an appropriate TTL per addon prevents stale data and controls Redis memory consumption.
+Returns the time-to-live in seconds for cache entries written by this addon. The value controls both the Caffeine L1 per-entry TTL and the Redis `EX` parameter on every `SET` call. Choosing an appropriate TTL per addon prevents stale data and controls memory consumption in both cache layers.
+
+### `l1CacheEnabled()`
+
+```java
+public boolean l1CacheEnabled();
+```
+
+Controls whether the Caffeine L1 in-memory cache is used for this addon. The default implementation returns `true`. Override and return `false` to bypass L1 entirely; reads will always pass through to Redis L2 first. Use this for large payloads or rarely-accessed data where holding a deserialized copy in memory is not worth the overhead.
+
+```java
+@Override
+public boolean l1CacheEnabled() {
+    return false; // skip L1, always read from Redis L2
+}
+```
 
 ### `handleRequest()`
 
