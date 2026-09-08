@@ -1,10 +1,40 @@
 ---
 title: "Nexus Core Changelog"
 sidebarTitle: "Changelog"
-description: "Complete version history for Nexus Core, from the first stable release (v1.0.0) through the latest release (v1.6.5), newest first."
+description: "Complete version history for Nexus Core, from the first stable release (v1.0.0) through the latest release (v1.6.6), newest first."
 ---
 
 This page lists every Nexus Core release, newest first. Breaking behavior changes and security patches are highlighted.
+
+## v1.6.6 — Reliability, Security, and Dashboard Refresh (Sep 8, 2026)
+
+This release strengthens message delivery guarantees, cache mutation ordering, persistence correctness, and authentication defaults, while shipping a redesigned dashboard.
+
+**Reliability and data integrity:**
+
+- **Premature acknowledgement fix:** Messages are now acknowledged (`XACK`) only after tracked tasks and MongoDB persistence complete successfully. Previously, a failure mid-processing could result in an acknowledged-but-lost write. Failed operations can now be safely retried.
+- **Pending write isolation:** Pending writes are preserved independently from the L1 Caffeine cache. Cache eviction or `L1InvalidationBus` invalidation no longer risks discarding queued persistence operations.
+- **Per-key locking fix:** Concurrent mutations for the same key are now processed in a predictable, serialized order. Improves consistency under high write concurrency.
+- **Persistence failures surface correctly:** Storage failures now propagate up to the message processing layer instead of being silently swallowed and acknowledged. The circuit breaker and retry logic introduced in v1.6.4 can now act on these failures.
+
+**Security:**
+
+- **Unsigned messages rejected by default.** Nexus Core now rejects inbound messages that lack a valid `sig` field when `NEXUS_SIGNING_KEY` is set, with no fallback to unsigned processing. An explicit compatibility flag is available for environments that still need to accept legacy unsigned messages during a transition period.
+- Message consumption now starts only after application initialization has fully completed, eliminating a race window where messages could arrive before addons were registered.
+
+<Warning>
+  The default behavior change for unsigned messages may break Spigot-side clients that are not yet signing their outbound packets. Set `NEXUS_SIGNING_KEY` on both sides before upgrading, or enable the explicit legacy compatibility flag during your transition.
+</Warning>
+
+**Dashboard refresh:**
+
+- Improved overall interface design, refined layouts, and better visual consistency.
+- Cleaner and more modern appearance across all panels.
+- Improved usability and administration experience.
+
+**Runtime regression tests:**
+
+- Added regression coverage for critical message-processing guarantees. All checks passed: 27 Redis/MongoDB checks, 8 HTTP checks, 2 signature policy checks.
 
 ## v1.6.5 — Two-Tier L1/L2 Caching with Caffeine (Sep 7, 2026)
 
