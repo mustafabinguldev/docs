@@ -1,10 +1,35 @@
 ---
 title: "Nexus Core Changelog"
 sidebarTitle: "Changelog"
-description: "Complete version history for Nexus Core, from the first stable release (v1.0.0) through the latest release (v1.6.6), newest first."
+description: "Complete version history for Nexus Core, from the first stable release (v1.0.0) through the latest release (v1.7.0), newest first."
 ---
 
 This page lists every Nexus Core release, newest first. Breaking behavior changes and security patches are highlighted.
+
+## v1.7.0 — Multi-Database Support and Architecture Refactor (Sep 11, 2026)
+
+This is the first major version release since v1.0.0 and introduces a fully abstracted database layer. Nexus Core is no longer hard-wired to MongoDB: addons can now target PostgreSQL, MySQL, or any supported adapter through a unified provider/driver interface.
+
+**Database provider/driver abstraction:**
+
+- The persistence layer has been refactored behind a generic **database provider interface**. MongoDB remains supported as the default adapter; PostgreSQL and MySQL adapters are shipping as the first additional targets.
+- Addons declare which provider they use through configuration rather than hard-coded MongoDB calls. The framework handles connection routing at runtime.
+
+**Dynamic connection routing:**
+
+- Database connections are resolved at request time based on each addon's cache context and the active configuration. Multiple data sources can be live simultaneously; different addons can target different databases within the same Nexus Core instance.
+
+**Configuration schema update:**
+
+- The configuration schema has been extended to support multiple named data source definitions. Each data source entry specifies its driver type, connection URI, and any driver-specific options. The existing single-MongoDB configuration continues to work as the `default` data source.
+
+**Integration test suites:**
+
+- New integration test suites have been added for each supported database adapter, covering connection lifecycle, CRUD operations, and Nexus Core protocol compatibility.
+
+<Warning>
+  **Breaking change:** `DataAddon#getDatabase()` and `DataAddon#getCollection()` semantics depend on the selected driver. Addons targeting MongoDB are unaffected if they rely on the default data source. Addons that directly reference MongoDB-specific APIs will need to migrate to the new provider interface to use non-MongoDB adapters.
+</Warning>
 
 ## v1.6.6 — Reliability, Security, and Dashboard Refresh (Sep 8, 2026)
 

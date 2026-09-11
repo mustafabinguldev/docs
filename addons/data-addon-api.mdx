@@ -34,7 +34,11 @@ Returns a human-readable name displayed in the dashboard and log output. This va
 public abstract String getDatabase();
 ```
 
-Returns the name of the MongoDB database this addon reads from and writes to.
+Returns the name of the database (or schema) this addon reads from and writes to. For MongoDB adapters this is the database name; for SQL adapters (PostgreSQL, MySQL) this is the schema or catalog name.
+
+<Note>
+  As of v1.7.0, the persistence layer supports multiple database adapters. `getDatabase()` is interpreted by the active driver for this addon. MongoDB addons using the default data source work without changes.
+</Note>
 
 ### `getCollection()`
 
@@ -42,7 +46,7 @@ Returns the name of the MongoDB database this addon reads from and writes to.
 public abstract String getCollection();
 ```
 
-Returns the MongoDB collection name. Nexus Core performs all CRUD operations against this collection.
+Returns the collection or table name. Nexus Core routes all CRUD operations to this target through the addon's configured database adapter. For MongoDB this is the collection name; for SQL adapters this is the table name.
 
 ### `cacheKeyHeaderTag()`
 

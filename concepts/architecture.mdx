@@ -57,17 +57,20 @@ Redis also serves as the shared L2 cache and publishes keyspace notifications th
 
 The security chain runs first on every inbound packet: HMAC-SHA256 signature verification, a 5-minute timestamp window, and nonce replay detection. After validation, the AddonRegistry dispatches the request to the matching DataAddon by protocol ID. The addon consults the cache hierarchy and performs the required MongoDB operation. All MongoDB and Redis calls are wrapped in **Resilience4j Circuit Breakers** that trip to `OPEN` on high error rates, and **Exponential Backoff Retry** with jitter automatically retries transient failures.
 
-### Persistence Layer (MongoDB)
+### Persistence Layer (Multi-Database)
 
-MongoDB is the durable backing store. Nexus Core maintains the only connection pool to MongoDB, which eliminates per-server connection overhead regardless of how many Spigot instances are running. DataAddons declare their target database and collection; the framework handles all serialization.
+As of v1.7.0, the persistence layer is abstracted behind a generic **database provider interface**. MongoDB remains the default adapter; PostgreSQL and MySQL are also supported out of the box. Nexus Core maintains the only connection pool to each configured data source, eliminating per-server connection overhead regardless of how many Spigot instances are running.
+
+DataAddons declare their target database and collection (or table). The framework resolves the correct adapter at request time based on the addon's configuration and routes all serialization transparently. Multiple data sources can run simultaneously — different addons within the same Nexus Core instance can target different databases.
 
 ## Why This Design?
 
 | Problem | Without Nexus Core | With Nexus Core |
 | --- | --- | --- |
-| DB Connections | Every server has its own connection pool | One optimized, shared pool |
+| DB Connections | Every server has its own connection pool | One optimized, shared pool per data source |
 | Cache Consistency | Per-server caches diverge and go stale | Centralized Redis cache, always consistent |
 | Data Logic | Duplicated across every server codebase | Defined once in a DataAddon, shared everywhere |
+| Database Flexibility | Locked to a single engine | MongoDB, PostgreSQL, MySQL — or multiple at once |
 
 ## Related Topics
 
